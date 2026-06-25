@@ -17,19 +17,22 @@ import threading
 import time
 
 from vision_pi5.comms import uart_protocol as proto
+from vision_pi5 import config as _cfg
 
-UART_PORT  = "/dev/ttyAMA0"
-BAUDRATE   = 115200
-
-MM_PER_TICK = 0.0027555
-EMA_ALPHA   = 0.25
+# Hardware constants live in vision_pi5/config.py (single source of truth);
+# these are thin local aliases so existing references and tooling keep working.
+UART_PORT   = _cfg.UART_PORT
+BAUDRATE    = _cfg.UART_BAUD
+MM_PER_TICK = _cfg.R_ENC                 # mm/pulse — recalibrate: tools/calibrate_encoder.py
+EMA_ALPHA   = _cfg.BELT_SPEED_EMA_ALPHA
 
 _data_lock  = threading.Lock()
 _relay_lock = threading.Lock()
 
-current_belt_speed   = 0.0
-current_total_ticks  = 0
-_ser: serial.Serial  = None
+current_belt_speed     = 0.0
+current_total_ticks    = 0        # absolute encoder pulse count (int32 from STM32)
+current_pulse_freq_hz  = 0.0      # Pi-derived pulse rate (pulses/sec, EMA-smoothed)
+_ser: serial.Serial    = None
 
 # Protocol constants (aliased from uart_protocol for local use / tests)
 _HEADER1    = proto.HEADER1
@@ -42,8 +45,8 @@ _SYNC_BYTES = proto.SYNC_BYTES
 _ACK_BYTES  = proto.ACK_BYTES
 
 # --- Heartbeat / handshake (UART communication status indicator) ---
-HEARTBEAT_PING_INTERVAL_S = 0.5     # how often the Pi pings the STM32
-HEARTBEAT_TIMEOUT_S       = 1.5     # no ACK within this window -> Communication Fault
+HEARTBEAT_PING_INTERVAL_S = _cfg.HEARTBEAT_PING_INTERVAL_S   # how often the Pi pings the STM32
+HEARTBEAT_TIMEOUT_S       = _cfg.HEARTBEAT_TIMEOUT_S         # no ACK in window -> Comm Fault
 
 uart_link_ok   = False              # current link health (read via get_uart_status)
 _status_lock   = threading.Lock()
@@ -81,6 +84,35 @@ def get_motor_data() -> tuple:
 def get_belt_speed() -> float:
     with _data_lock:
         return current_belt_speed
+
+
+def get_absolute_pulse_count() -> int:
+    """Absolute encoder pulse count (STM32 int32 total_ticks, continuously rising).
+
+    This is the spatial reference for the Pi's encoder tracking: project an
+    object's belt position from the pulse delta since its capture snapshot
+    (X_current = X_snap + (C_now - C_snap) * R_ENC). Immune to wall-clock jitter.
+    """
+    with _data_lock:
+        return current_total_ticks
+
+
+def get_pulse_frequency_hz() -> float:
+    """Pi-derived encoder pulse rate (pulses/sec, EMA-smoothed).
+
+    Belt velocity = get_pulse_frequency_hz() * config.R_ENC (mm/s). Derived from
+    tick deltas on the Pi rather than the STM32 rpm float, so it shares one
+    calibration constant (R_ENC) with the spatial projection above.
+    """
+    with _data_lock:
+        return current_pulse_freq_hz
+
+
+def get_motor_snapshot() -> tuple:
+    """Atomic (pulse_count, pulse_freq_hz) read for a consistent spatial+temporal
+    pair (avoids sampling position and velocity at two different instants)."""
+    with _data_lock:
+        return current_total_ticks, current_pulse_freq_hz
 
 
 def send_relay(suction: bool, cylinder_override: bool = False) -> bool:
@@ -122,11 +154,12 @@ def get_uart_status() -> bool:
 
 class _RxState:
     """Per-thread decode state for the telemetry EMA filter."""
-    __slots__ = ("ema_speed", "has_prev_sample", "prev_ticks",
+    __slots__ = ("ema_speed", "ema_freq", "has_prev_sample", "prev_ticks",
                  "prev_time", "consecutive_errors")
 
     def __init__(self):
         self.ema_speed          = 0.0
+        self.ema_freq           = 0.0
         self.has_prev_sample    = False
         self.prev_ticks         = 0
         self.prev_time          = 0.0
@@ -135,7 +168,7 @@ class _RxState:
 
 def _decode_telemetry(frame, st):
     """Decode an 11-byte telemetry frame (caller guarantees the 0xAA/0xBB header)."""
-    global current_belt_speed, current_total_ticks
+    global current_belt_speed, current_total_ticks, current_pulse_freq_hz
     payload = frame[2:10]
     ck_byte = frame[10]
 
@@ -153,18 +186,22 @@ def _decode_telemetry(frame, st):
         dt = now - st.prev_time
         if dt > 0.0:
             d_ticks       = abs(ticks_abs - st.prev_ticks)
-            inst_speed    = (d_ticks * MM_PER_TICK) / dt
+            inst_freq     = d_ticks / dt                    # pulses / second
+            inst_speed    = inst_freq * MM_PER_TICK         # mm / second
+            st.ema_freq   = EMA_ALPHA * inst_freq  + (1 - EMA_ALPHA) * st.ema_freq
             st.ema_speed  = EMA_ALPHA * inst_speed + (1 - EMA_ALPHA) * st.ema_speed
     else:
         st.has_prev_sample = True
         st.ema_speed       = 0.0
+        st.ema_freq        = 0.0
 
     st.prev_ticks = ticks_abs
     st.prev_time  = now
 
     with _data_lock:
-        current_belt_speed  = st.ema_speed
-        current_total_ticks = ticks_val
+        current_belt_speed    = st.ema_speed
+        current_pulse_freq_hz = st.ema_freq
+        current_total_ticks   = ticks_val
 
     st.consecutive_errors = 0
 

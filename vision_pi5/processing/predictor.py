@@ -7,11 +7,15 @@ used; otherwise a trapezoidal-velocity geometric estimate is returned.
 import math
 import os
 
-from vision_pi5.config import MODEL_FILE
+from vision_pi5.config import (
+    MODEL_FILE, SCARA_MAX_SPEED_MM_S, SCARA_ACCEL_MM_S2, SCARA_MOVE_OVERHEAD_S,
+)
 
-_SCARA_MAX_SPEED_MM_S  = 800.0
-_SCARA_ACCEL_MM_S2     = 1200.0
-_OVERHEAD_S            = 0.06
+# Centralized in config.py (single source of truth); aliased so the geometric
+# fallback body below is untouched.
+_SCARA_MAX_SPEED_MM_S  = SCARA_MAX_SPEED_MM_S
+_SCARA_ACCEL_MM_S2     = SCARA_ACCEL_MM_S2
+_OVERHEAD_S            = SCARA_MOVE_OVERHEAD_S
 
 
 def _geometric_time(x1, y1, z1, x2, y2, z2) -> float:

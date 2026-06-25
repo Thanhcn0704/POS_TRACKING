@@ -18,10 +18,11 @@ _Repo: POS_TRACKING · branch `master` (canonical; `main` is stale) · remote: g
 - **Pi ↔ Robot:** TCP socket. Pi is **CLIENT**, robot `IP1` is **SERVER** (`ROBOT_IP=192.168.0.124`, `ROBOT_PORT=1001`). `TCP_NODELAY` set (50 ms ACK budget). **Connection order matters** — start Pi first (it connects), then run `PICKTEST`, else robot `PRINT IP1` throws `2-046 Invalid Channel`.
 - **Pi ↔ STM32:** UART `/dev/ttyAMA0` @ 115200. Telemetry frame `0xAA 0xBB … 11 bytes` (`<fi` = float speed + int32 ticks). Heartbeat: Pi pings `0xDD,seq,…` every 0.5s; STM32 ACK frame `0xCD 0xCE seq ck` (4 bytes); fault if no ACK in 1.5s. `MM_PER_TICK=0.0027555`, `EMA_ALPHA=0.25`.
 
-**Peripheral mapping:**
-- **Relay 1 (Vacuum):** Pi dead-reckoning `threading.Timer`, fired AFTER the pick dispatch (`on_commit` = `suction_timer.start`). (SCOL has no relay command in this cell.)
-- **Relay 2 (Feeder):** **STM32 autonomous**, fires every **3.0s** on its own timer. No Pi task; Pi must only stay non-blocking.
-- **Conveyor Encoder:** read by STM32, normalized, streamed to Pi as telemetry.
+**Peripheral mapping** (verified against `embedded_stm32/main.c` — pin assignment is authoritative):
+- **Relay2 (PB9) = Vacuum suction:** Pi-controlled via the `r1` byte of the `0xCC` relay frame; the Pi fires it on a dead-reckoning `threading.Timer` after the pick dispatch (`on_commit` = `suction_timer.start`). (SCOL has no relay command in this cell.)
+- **Relay1 (PB8) = Cylinder feeder / part pusher:** **STM32 autonomous**, fires every **3.0s** on its own timer. No Pi task; Pi must only stay non-blocking.
+- **Conveyor Encoder:** read by STM32 (TIM2, PA0/PA1); absolute `total_ticks` + `rpm` streamed to Pi every 100 ms. See `memory/stm32-uart-frame-contract.md`.
+- _(Note: an earlier draft labeled vacuum as "Relay 1" — the firmware pin map above is correct: Relay1=feeder, Relay2=vacuum.)_
 
 **Belt reality:** ~25.7 mm/s measured ⇒ object transit ≈16s.
 

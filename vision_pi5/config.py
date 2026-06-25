@@ -17,6 +17,45 @@ HOMO_FILE         = os.path.join(MODELS_DIR, "homography_test.npz")
 OFFSET_CALIB_FILE = os.path.join(MODELS_DIR, "offset_calib.npz")
 MODEL_FILE        = os.path.join(MODELS_DIR, "robot_time_model.pkl")
 
+# =========================================================================== #
+#   OPERATOR-ADJUSTABLE HARDWARE CALIBRATION  (edit on the live Pi)            #
+#                                                                             #
+#   Single source of truth. Every thread imports these from here, so changing #
+#   a value below changes the whole pipeline — never hardcode them in the     #
+#   algorithm modules (uart_comm / detect_worker / sender_worker).            #
+# =========================================================================== #
+
+# --- Encoder -> distance  (THE spatial-tracking constant) ------------------- #
+# R_ENC = belt millimetres travelled per encoder pulse. It folds encoder PPR +
+# roller circumference + gear ratio + real belt slip into one number, so it
+# CANNOT be derived theoretically — it MUST be measured on the physical line:
+#       python3 -m tools.calibrate_encoder
+# The value below is the existing pre-refactor constant (provenance UNVERIFIED),
+# kept TEMPORARILY. Recalibrate and overwrite this one line before production.
+R_ENC = 0.0027555            # mm / pulse   <-- recalibrate, do not trust blindly
+
+# --- STM32 UART link -------------------------------------------------------- #
+# Telemetry frame (STM32 -> Pi, every 100 ms, 11 bytes):
+#   [0xAA][0xBB][float rpm (4B)][int32 total_ticks (4B)][XOR checksum]
+# The Pi uses total_ticks as the absolute pulse count and derives the pulse
+# rate itself (it ignores the rpm float to avoid a second unverified constant).
+UART_PORT          = "/dev/ttyAMA0"
+UART_BAUD          = 115200
+UART_TELEMETRY_HZ  = 10            # STM32 telemetry cadence (informational)
+
+# --- Heartbeat (UART link-health indicator; does NOT gate the pipeline) ----- #
+HEARTBEAT_PING_INTERVAL_S = 0.5    # how often the Pi pings the STM32
+HEARTBEAT_TIMEOUT_S       = 1.5    # no ACK in this window -> Communication Fault
+BELT_SPEED_EMA_ALPHA      = 0.25   # smoothing on the Pi-derived belt speed / pulse rate
+
+# --- SCARA kinematic limits (geometric travel-time fallback only) ----------- #
+# UNVERIFIED mechanical boundaries — confirm against the THL400 / TSL3000 spec
+# (or measure) before trusting predicted pick timing. Flagged per the empirical
+# parameter guardrail; do not treat as ground truth.
+SCARA_MAX_SPEED_MM_S  = 800.0      # mm/s   <-- verify
+SCARA_ACCEL_MM_S2     = 1200.0     # mm/s^2 <-- verify
+SCARA_MOVE_OVERHEAD_S = 0.06       # s, fixed per-move overhead <-- verify
+
 # --------------------------------------------------------------------------- #
 #  Robot network
 # --------------------------------------------------------------------------- #
@@ -60,8 +99,13 @@ X_OPT                = 0.0      # static optimal pick X (middle of work envelope
 LATENCY_OFFSET       = 0.05     # s — TCP + mechanical accel / valve lead compensation
 
 # --- TCP coordinate-ACK handshake (comms.robot_link <-> robot_scara SCOL) ---
-STX_BYTE             = 0x02     # frame start (set to ord('<') if SCOL can't read control bytes)
-ETX_BYTE             = 0x03     # frame end   (set to ord('>') likewise)
+# SCOL "Non-protocol" INPUT accepts NUMERIC data only, comma-separated, CR-
+# terminated. Any non-numeric byte (incl. STX/ETX control bytes) crashes the
+# controller with "2-046 Invalid Channel". So the coordinate record is sent as
+#     ID,CMD,X,Y,Z,C,SHP\r
+# and the gate as a bare integer (GATE_GO / GATE_ABORT) + CR. No framing bytes.
+GATE_GO              = 1        # Pi -> robot: ACK valid        -> execute the move
+GATE_ABORT           = 0        # Pi -> robot: timeout/mismatch -> re-request
 ACK_TIMEOUT_S        = 0.05     # 50 ms deterministic ACK window
 ACK_RETRIES          = 2        # re-sends before safe-fault (skip the object)
 CHK_OFFSET           = 1000     # bias added before truncation so checksum terms stay positive
