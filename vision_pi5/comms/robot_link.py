@@ -140,7 +140,9 @@ class RobotLink:
                 if len(parts) < 3:
                     return "bad"
                 try:
-                    ack_id, ack_ck = int(parts[1]), int(parts[2])
+                    # int(float(...)) tolerates a SCOL controller that prints
+                    # integers as reals ("1.000", "3877.000").
+                    ack_id, ack_ck = int(float(parts[1])), int(float(parts[2]))
                 except ValueError:
                     return "bad"
                 if ack_id != cmd_id:
