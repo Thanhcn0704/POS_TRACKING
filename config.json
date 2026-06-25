@@ -1,0 +1,84 @@
+{
+  "_HƯỚNG_DẪN": "Đọc kỹ comment (_note) bên cạnh mỗi thông số trước khi điền. Sau khi chỉnh xong, chạy: python3 vision_phase1.py --check để kiểm tra trước khi chạy thật.",
+
+  "camera": {
+    "_note_id": "Thường là 0 nếu chỉ có 1 camera. Nếu có nhiều camera, thử lần lượt 0,1,2...",
+    "id": 0,
+
+    "_note_resolution": "C922 hỗ trợ: 1280x720@60fps hoặc 1920x1080@30fps. Băng tải nhanh → dùng 1280x720@60fps",
+    "width": 1280,
+    "height": 720,
+    "fps": 60
+  },
+
+  "robot": {
+    "_note_host": "IP tĩnh của TSL3000. Kiểm tra trong TSAssist > Network Settings",
+    "host": "192.168.1.10",
+
+    "_note_port": "Port TCP mặc định TSL3000 là 10001. Xác nhận lại trong cấu hình SCOL",
+    "port": 10001,
+
+    "_note_z_target": "Chiều cao TCP khi gắp (mm). Đo từ mặt băng tải đến tip gripper khi đóng, đặt số âm nếu hệ tọa độ robot có gốc phía trên",
+    "z_target": -50.0
+  },
+
+  "detection": {
+    "_note_hsv": "Cách đo HSV thực tế: chạy 'python3 vision_phase1.py --hsv-tool', dùng trackbar kéo đến khi mask chỉ highlight đúng vật cần gắp",
+    "_note_hsv_range": "Màu cam/đỏ: lower=[0,80,80] upper=[30,255,255] | Màu xanh lá: lower=[40,80,80] upper=[80,255,255] | Màu xanh dương: lower=[100,80,80] upper=[130,255,255]",
+    "hsv_lower": [0, 80, 80],
+    "hsv_upper": [30, 255, 255],
+
+    "_note_min_area": "Diện tích contour tối thiểu (pixel²). Công thức ước lượng: chiều_rộng_vật_px × chiều_cao_vật_px × 0.5. Chạy --hsv-tool để thấy contour thực tế",
+    "min_area": 500
+  },
+
+  "conveyor": {
+    "_note_encoder_mode": "Giá trị hợp lệ: 'gpio' (RPi5 trực tiếp) | 'modbus' (RS485) | 'sim' (test không cần phần cứng)",
+    "encoder_mode": "gpio",
+
+    "_note_gpio_pins": "Kiểm tra sơ đồ đấu dây encoder quadrature với RPi5. BCM pin: xem 'pinout.xyz' hoặc chạy 'pinout' trên RPi5 terminal",
+    "encoder_gpio_a": 17,
+    "encoder_gpio_b": 27,
+
+    "_note_ppr": "CÁCH ĐO PPR: (1) Đánh dấu 1 vạch trên trục encoder + 1 điểm cố định. (2) Dùng oscilloscope hoặc đếm xung GPIO trong 1 vòng quay. Hoặc xem datasheet encoder (thường ghi 'P/R' hoặc 'PPR'). Giá trị phổ biến: 100, 200, 360, 500, 600, 1000, 2048",
+    "encoder_ppr": 1000,
+
+    "_note_mm_per_rev": "CÁCH ĐO MM_PER_REV: (1) Đánh dấu điểm trên băng tải bằng bút/băng keo. (2) Quay encoder đúng 1 vòng (dùng tay hoặc đếm PPR xung). (3) Đo khoảng cách điểm đánh dấu đã di chuyển bằng thước. Đó chính là MM_PER_REV. Công thức lý thuyết: π × đường_kính_bánh_dẫn_mm",
+    "encoder_mm_per_rev": 200.0,
+
+    "_note_sim_speed": "Chỉ dùng khi encoder_mode = 'sim'. Đo tốc độ băng tải thực tế: đánh dấu 2 điểm cố định cách nhau 1000mm, bấm giờ vật đi qua 2 điểm đó",
+    "conveyor_sim_speed": 50.0,
+
+    "_note_trigger_line": "Vị trí Y (pixel) để đăng ký vật vào zone tracking. Mặc định CAM_H/3 (~240px cho 720p). Chỉnh nếu camera góc nghiêng. Xem trong --hsv-tool",
+    "trigger_line_px": 240
+  },
+
+  "modbus": {
+    "_note": "Chỉ cần điền nếu encoder_mode = 'modbus'",
+    "_note_port": "Thường là /dev/ttyUSB0. Kiểm tra: ls /dev/ttyUSB*",
+    "port": "/dev/ttyUSB0",
+    "baudrate": 9600,
+    "unit_id": 1,
+    "_note_reg_speed": "Địa chỉ register chứa tốc độ. Xem datasheet servo driver",
+    "reg_speed": 100,
+    "_note_speed_scale": "Hệ số chuyển đổi: speed_mm_s = register_value × speed_scale. Xem datasheet",
+    "speed_scale": 0.01
+  },
+
+  "workspace": {
+    "_note": "Vùng làm việc an toàn của THL400 (mm). Dùng Teach Pendant di chuyển robot đến các góc giới hạn và đọc tọa độ",
+    "_note_how_to_measure": "Bật Servo ON → chế độ JOINT → di chuyển đến điểm giới hạn → đọc X,Y trên màn hình TSL3000",
+    "x_min": -300.0,
+    "x_max":  300.0,
+    "y_min": -300.0,
+    "y_max":  300.0,
+    "_note_enabled": "Đặt false nếu muốn tắt safety check tạm thời khi debug",
+    "safety_check_enabled": true
+  },
+
+  "files": {
+    "_note": "Đường dẫn file calibration. Không cần thay đổi trừ khi dùng nhiều camera",
+    "calib_file": "camera_calib.npz",
+    "homography_file": "homography.npz"
+  }
+}
