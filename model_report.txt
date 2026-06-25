@@ -1,0 +1,43 @@
+============================================================
+  ROBOT TIMING MODEL — BÁO CÁO HUẤN LUYỆN
+============================================================
+Mô hình được chọn  : Physical Linear (t_dominant)
+Số mẫu train       : 270
+
+--- Thông số trục ---
+  ω1_max (Joint 1) : 180.0 deg/s
+  ω2_max (Joint 2) : 150.0 deg/s
+  vZ_max (Trục Z)  : 200.0 mm/s
+
+--- Đánh giá mô hình ---
+  R² cross-val (5-fold) : 0.9709 ± 0.0097
+  R² in-sample       : 0.9740
+  MAE                : 26.05 ms
+  Sai số P95         : 60.8 ms
+
+--- Ước tính sai số vị trí khi tracking ---
+  Với v_belt = 100 mm/s → sai số P95 ≈ 6.1 mm
+
+Model đã lưu: robot_time_model.pkl
+============================================================
+
+METADATA (JSON):
+{
+  "model_name": "Physical Linear (t_dominant)",
+  "model_mode": "physical_linear",
+  "omega1_max": 180.0,
+  "omega2_max": 150.0,
+  "vz_max": 200.0,
+  "cv_r2_mean": 0.9708731067947249,
+  "cv_r2_std": 0.009673336206374405,
+  "r2_insample": 0.974037144302657,
+  "mae_ms": 26.050154337983596,
+  "p95_error_ms": 60.82358864239901,
+  "n_samples": 270,
+  "feature_names": [
+    "t_th1_ms",
+    "t_th2_ms",
+    "t_z_ms",
+    "t_dominant_ms"
+  ]
+}
