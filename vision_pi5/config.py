@@ -70,7 +70,10 @@ OBJECT_CLEAR_SECONDS = 0.5
 # --------------------------------------------------------------------------- #
 PICK_QUEUE_MAX       = 4
 NEW_OBJECT_MIN_DIST  = 30.0
-TRACK_TIMEOUT_S      = 8.0
+# Queue-staleness watchdog (NOT tracking math — position comes from the encoder).
+# Must exceed the real belt transit (~16 s measured) or in-flight objects are
+# discarded before reaching X_OPT. Raise this if the belt is slower / longer.
+TRACK_TIMEOUT_S      = 20.0
 
 # --------------------------------------------------------------------------- #
 #  Offset calibration defaults
