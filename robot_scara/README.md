@@ -143,10 +143,10 @@ Boundary: `5+1+0 + 793+750+1146+1000 = 3695` → **`ACK 5 3695`**
 * **cmd 1 — WAIT_BOUNDARY**: park at `POINT(X+10, Y, Z, C, 0.0, LEFTY)` (the Pi sends
   `Z = 146.439`, the lift height), then `ARRIVED`. Pre-positions the arm at `ROBOT_X_MIN`
   while a far object travels into the pick window.
-* **cmd 2 — DO_PICK**: approach `POINT(X+10, Y, ZLIFT, C, 0.0, LEFTY)` → descend to the
+* **cmd 2 — DO_PICK**: approach `POINT(X+10, Y, ZSAFE, C, 0.0, LEFTY)` → descend to the
   **received** pick depth `POINT(X, Y, Z, C, 0.0, LEFTY)` → lift → place by shape
   (1→T2/T1/T2, 2→T4/T3/T4, 3/0→T6/T5/T6) → `DONE`.
-  `ZLIFT = 146.439` is a program constant (travel height); only the **pick** Z comes from the
+  `ZSAFE = 146.439` is a program constant (travel height); only the **pick** Z comes from the
   verified record. `LEFTY` (config constant 1) is pinned as the 6th `POINT()` argument so the
   controller never flips arm solution between approach and pick. `MOVE` reads the config from
   the point, so no separate `CONFIG = LEFTY` statement is needed.

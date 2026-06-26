@@ -16,7 +16,7 @@ import threading
 
 from vision_pi5.config import (
     ROBOT_IP, ROBOT_PORT, HOMO_FILE, OFFSET_CALIB_FILE, PICK_QUEUE_MAX,
-    CAM_W, CAM_H, Z_LIFT, PLACE_LABEL, STABLE_TIME_S, EMA_ALPHA,
+    CAM_W, CAM_H, Z_SAFE, Z_PICK, PLACE_LABEL, STABLE_TIME_S, EMA_ALPHA,
     AREA_MIN, AREA_MAX, SOLIDITY_MIN,
 )
 from vision_pi5.comms.robot_link import RobotLink
@@ -40,7 +40,7 @@ def main():
     print("="*55)
     print(" VISION PICK & PLACE REALTIME — THL400 / TSL3000")
     print("="*55)
-    print(f"[SEQ] Pick Z=28.000 (fixed) | Lift Z={Z_LIFT}")
+    print(f"[SEQ] Pick Z={Z_PICK} | Safe Z={Z_SAFE}")
     print(f"[ROUTE] circle=1->{PLACE_LABEL[1]}  "
           f"square=2->{PLACE_LABEL[2]}  "
           f"triangle=3->{PLACE_LABEL[3]}")
@@ -65,7 +65,7 @@ def main():
             print(f"[NET] Thu lai... {e}")
             time.sleep(2)
 
-    z_val = 28.0
+    z_val = Z_PICK     # pick descent depth (config; was a hardcoded 28.0)
 
     print("\n--- PARALLAX (nhap 0 neu bo qua) ---")
     while True:

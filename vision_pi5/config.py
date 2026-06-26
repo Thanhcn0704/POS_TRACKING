@@ -160,8 +160,10 @@ CAM_FPS_TOLERANCE    = 2.0      # |actual-target| FPS allowed (covers 59.94 etc.
 # --------------------------------------------------------------------------- #
 #  Robot Z heights + place stops (mm)
 # --------------------------------------------------------------------------- #
-Z_PICK               = 48.782
-Z_LIFT               = 146.439
+# 3-step pick stroke: approach Z_SAFE -> descend Z_PICK (+ vacuum) -> retract Z_SAFE.
+Z_SAFE               = 146.439  # clearance / cross-conveyor travel height (was Z_LIFT)
+Z_PICK               = 28.000   # cup-contact surface depth where the vacuum compresses
+                                # (measured; safe to adjust this one line)
 Z_PLACE              = 14.000
 T1_X                 = 138.638
 T1_Y                 = -7.386

@@ -12,7 +12,7 @@ import threading
 
 from vision_pi5.config import (
     C_FIXED, TRACK_TIMEOUT_S, X_OPT, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
-    Z_LIFT, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
+    Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
     R_ENC,
 )
 from vision_pi5.processing import trajectory as traj
@@ -195,7 +195,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 if wait_ok:
                     last_robot_x = ROBOT_X_MIN + 10.0   # SCOL parks at X+10
                     last_robot_y = y_val
-                    last_robot_z = Z_LIFT
+                    last_robot_z = Z_SAFE
                 else:
                     print("[WARN] CMD=1 (don dau) loi — bo qua vat nay.\n")
                     continue                            # drop this object

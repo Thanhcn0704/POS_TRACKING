@@ -18,7 +18,7 @@ import select
 import time
 
 from vision_pi5.config import (
-    Z_LIFT, PLACE_LABEL,
+    Z_SAFE, PLACE_LABEL,
     GATE_GO, GATE_ABORT, ACK_TIMEOUT_S, ACK_RETRIES, CHK_OFFSET,
 )
 
@@ -249,16 +249,16 @@ class RobotLink:
 
     def send_wait_boundary(self, cmd_id, x, y):
         print(f"[TX] CMD=1 (WAIT) id={cmd_id} X={x:.3f} Y={y:.3f}")
-        print(f"[SEQ] WAIT_BOUNDARY ({x+10:.3f}, {y:.3f}, {Z_LIFT:.3f})")
-        return self.send_verified(cmd_id, 1, x, y, Z_LIFT, 0.0, 0, "ARRIVED")
+        print(f"[SEQ] WAIT_BOUNDARY ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
+        return self.send_verified(cmd_id, 1, x, y, Z_SAFE, 0.0, 0, "ARRIVED")
 
     def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None):
         place_info = PLACE_LABEL.get(shape_code, "unknown")
         print(f"[TX] CMD=2 (PICK) id={cmd_id} X={x:.3f} Y={y:.3f} Z={z:.3f} "
               f"C={c:.3f} SHP={shape_code}")
-        print(f"[SEQ] APPROACH ({x+10:.3f}, {y:.3f}, {Z_LIFT:.3f})")
+        print(f"[SEQ] APPROACH ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
         print(f"[SEQ] PICK     ({x:.3f}, {y:.3f}, {z:.3f})")
-        print(f"[SEQ] LIFT     ({x+10:.3f}, {y:.3f}, {Z_LIFT:.3f})")
+        print(f"[SEQ] LIFT     ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
         print(f"[SEQ] PLACE -> {place_info}")
         return self.send_verified(cmd_id, 2, x, y, z, c, shape_code, "DONE",
                                   on_commit=on_commit)
