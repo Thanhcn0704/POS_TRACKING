@@ -157,6 +157,11 @@ STABLE_TIME_S        = 0.12
 AREA_MIN             = 500
 AREA_MAX             = 40000
 MORPH_KERNEL_SIZE    = 7
+# Vision-motion sync (Task 3): classify only when the object is FULLY in frame.
+FOV_EDGE_MARGIN_PX   = 20      # reject contours within this many px of the FOV edge
+                               # (still entering -> clipped silhouette -> false shape)
+AREA_SETTLE_FRAC     = 0.10    # lock shape only once |d_area|/area < this (area stopped
+                               # growing = fully entered, not still crossing in)
 
 # --------------------------------------------------------------------------- #
 #  Camera

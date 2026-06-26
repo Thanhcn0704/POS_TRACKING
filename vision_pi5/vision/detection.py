@@ -10,7 +10,7 @@ import cv2
 from vision_pi5.config import (
     MORPH_KERNEL_SIZE, AREA_MIN, AREA_MAX, SOLIDITY_MIN,
     PHYSICAL_AREA_MIN, PHYSICAL_AREA_MAX, PHYSICAL_DIM_MIN, PHYSICAL_DIM_MAX,
-    SHAPE_CODE, SHAPE_CODE_DEFAULT,
+    SHAPE_CODE, SHAPE_CODE_DEFAULT, FOV_EDGE_MARGIN_PX,
 )
 from vision_pi5.vision.geometry import pixel_to_robot, parallax_origin
 from vision_pi5.vision.shape import classify_shape
@@ -23,8 +23,19 @@ def contour_fully_inside_roi(contour, roi_mask):
     return cv2.countNonZero(outside) == 0
 
 
+def contour_fully_in_frame(contour, frame_w, frame_h, margin):
+    """True if the contour's bounding box clears every image edge by `margin` px,
+    i.e. the object is FULLY inside the FOV (not clipped by the frame boundary).
+    Rejects objects still entering the frame so a partial, clipped silhouette is
+    never classified as the wrong shape."""
+    x, y, w, h = cv2.boundingRect(contour)
+    return (x >= margin and y >= margin
+            and (x + w) <= frame_w - margin and (y + h) <= frame_h - margin)
+
+
 def run_detection(frame, roi_mask, hsv_params,
                   H, h_cam, h_obj, x_scale, x_bias, y_offset):
+    frame_h, frame_w = frame.shape[:2]
     h_min, h_max, s_min, s_max, v_min, v_max = hsv_params
     lower = np.array([h_min, s_min, v_min])
     upper = np.array([h_max, s_max, v_max])
@@ -60,6 +71,10 @@ def run_detection(frame, roi_mask, hsv_params,
         if roi_mask is not None:
             if not contour_fully_inside_roi(c, roi_mask):
                 continue
+
+        # Reject contours still crossing into the FOV (clipped -> wrong shape).
+        if not contour_fully_in_frame(c, frame_w, frame_h, FOV_EDGE_MARGIN_PX):
+            continue
 
         c_float = c.astype(np.float32)
         c_phys = cv2.perspectiveTransform(c_float, H)

@@ -8,7 +8,7 @@ pick entries to result_queue plus an overlay payload to display_queue.
 import time
 import queue
 
-from vision_pi5.config import EMA_ALPHA, STABLE_TIME_S
+from vision_pi5.config import EMA_ALPHA, STABLE_TIME_S, AREA_SETTLE_FRAC
 from vision_pi5.vision.detection import run_detection
 from vision_pi5.tracking.tracker import is_new_object
 from vision_pi5.hardware import uart_comm
@@ -27,6 +27,7 @@ def thread_detect(frame_queue, result_queue, display_queue,
     locked_shape      = None
     locked_shape_code = None
     enqueued_this_obj = False
+    prev_area         = None     # last frame's contour area (Task 3 area-settled gate)
 
     last_enq_x    = None
     last_enq_y    = None
@@ -71,7 +72,14 @@ def thread_detect(frame_queue, result_queue, display_queue,
             stable_secs = (time.monotonic() - stable_since) if stable_since else 0.0
             is_stable   = stable_secs >= STABLE_TIME_S
 
-            if is_stable and locked_shape is None:
+            # Area-settled gate: trust the silhouette only once the contour area
+            # has stopped growing (object fully entered, no longer crossing in).
+            area         = raw["area"]
+            area_settled = (prev_area is not None
+                            and abs(area - prev_area) <= AREA_SETTLE_FRAC * max(area, 1.0))
+            prev_area    = area
+
+            if is_stable and area_settled and locked_shape is None:
                 locked_shape      = raw["shape"]
                 locked_shape_code = raw["shape_code"]
                 print(f"[DETECT] LOCK shape={locked_shape} code={locked_shape_code}")
@@ -133,6 +141,7 @@ def thread_detect(frame_queue, result_queue, display_queue,
             locked_shape      = None
             locked_shape_code = None
             enqueued_this_obj = False
+            prev_area         = None
 
             payload = {
                 "frame":      frame,
