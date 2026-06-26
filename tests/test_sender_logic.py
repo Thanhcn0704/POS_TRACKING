@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vision_pi5 import config
 from vision_pi5.pipeline import sender_worker as sw
 
+XO = config.X_OPT     # rendezvous; pick-entry x positions are given relative to it
+
 
 # --------------------------------------------------------------------------- #
 #  Fakes
@@ -128,7 +130,7 @@ def test_perfect_window_picks_at_static_x_opt():
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)  # let the vacuum timer fire
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-100.0, v=2000.0, pulse_snap=0))
+    rq.put(_entry(x=XO - 100.0, v=2000.0, pulse_snap=0))
     _run(link, rq, stop)
 
     assert link.pick_calls, "expected a CMD2 pick"
@@ -142,7 +144,7 @@ def test_too_far_commands_exactly_boundary():
     stop = threading.Event()
     link = FakeLink(stop_event=stop)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-5000.0, v=100.0, pulse_snap=0))   # t_obj ~= 50s -> far -> CMD1
+    rq.put(_entry(x=XO - 5000.0, v=100.0, pulse_snap=0))   # t_obj ~= 50s -> far -> CMD1
     _run(link, rq, stop)
 
     assert link.boundary_calls, "expected a CMD1 boundary pre-position"
@@ -157,7 +159,7 @@ def test_passed_object_is_discarded():
     stop = threading.Event()
     link = FakeLink(stop_event=None)     # don't auto-stop; nothing should be called
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=50.0, v=100.0, pulse_snap=0))      # x_current > X_OPT -> discard
+    rq.put(_entry(x=XO + 50.0, v=100.0, pulse_snap=0))   # x_current > X_OPT -> discard
     t = _run(link, rq, stop, timeout=0.3)
     stop.set(); t.join(timeout=1.0)
 
@@ -170,7 +172,7 @@ def test_belt_stopped_no_zero_division():
     stop = threading.Event()
     link = FakeLink(stop_event=None)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-100.0, v=0.0, pulse_snap=0))
+    rq.put(_entry(x=XO - 100.0, v=0.0, pulse_snap=0))
     t = threading.Thread(target=sw.thread_sender,
                          args=(rq, _state(), stop, 28.0, link), daemon=True)
     t.start()
@@ -191,7 +193,7 @@ def test_pulse_advance_makes_far_snapshot_pickable():
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-200.0, v=2000.0, pulse_snap=0))        # snapshot, before the advance
+    rq.put(_entry(x=XO - 200.0, v=2000.0, pulse_snap=0))    # snapshot, before the advance
     _run(link, rq, stop)
 
     assert link.pick_calls, "encoder pulse advance should have made the object pickable"
@@ -228,7 +230,7 @@ def test_safe_state_pause_blocks_dispatch():
     stop = threading.Event()
     link = FakeLink(stop_event=None)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-100.0, v=2000.0))
+    rq.put(_entry(x=XO - 100.0, v=2000.0))
     t = threading.Thread(target=sw.thread_sender,
                          args=(rq, _state(), stop, 28.0, link), daemon=True)
     t.start()
@@ -250,8 +252,8 @@ def test_arbiter_prepositions_only_most_urgent_lane():
     stop = threading.Event()
     link = FakeLink(stop_event=None)                   # don't auto-stop; observe many cycles
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-1000.0, v=100.0, y=-250.0, code=1, pulse_snap=0))   # A: closer  -> urgent
-    rq.put(_entry(x=-5000.0, v=100.0, y=-200.0, code=2, pulse_snap=0))   # B: farther -> waits
+    rq.put(_entry(x=XO - 1000.0, v=100.0, y=-250.0, code=1, pulse_snap=0))   # A: closer  -> urgent
+    rq.put(_entry(x=XO - 5000.0, v=100.0, y=-200.0, code=2, pulse_snap=0))   # B: farther -> waits
     t = threading.Thread(target=sw.thread_sender,
                          args=(rq, _state(), stop, 28.0, link), daemon=True)
     t.start()

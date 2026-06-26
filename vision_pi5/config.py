@@ -32,7 +32,7 @@ MODEL_FILE        = os.path.join(MODELS_DIR, "robot_time_model.pkl")
 #       python3 -m tools.calibrate_encoder
 # The value below is the existing pre-refactor constant (provenance UNVERIFIED),
 # kept TEMPORARILY. Recalibrate and overwrite this one line before production.
-R_ENC = 0.0027588            # mm / pulse   <-- recalibrate, do not trust blindly
+R_ENC = 0.00295            # mm / pulse   <-- recalibrate, do not trust blindly
 
 # --- STM32 UART link -------------------------------------------------------- #
 # Telemetry frame (STM32 -> Pi, every 100 ms, 11 bytes):
@@ -88,9 +88,11 @@ OBJECT_CLEAR_SECONDS = 0.5
 PICK_QUEUE_MAX       = 4
 NEW_OBJECT_MIN_DIST  = 30.0
 # Queue-staleness watchdog (NOT tracking math — position comes from the encoder).
-# Must exceed the real belt transit (~16 s measured) or in-flight objects are
-# discarded before reaching X_OPT. Raise this if the belt is slower / longer.
-TRACK_TIMEOUT_S      = 20.0
+# MUST exceed the worst-case t_obj (transit time to X_OPT). Field log showed an
+# object enqueued 22.5 s upstream, so 20 s discarded it ~2.5 s before the pick ->
+# no CMD2. Set above the longest real transit across the FOV; raise if objects
+# are detected further upstream / the belt is slower.
+TRACK_TIMEOUT_S      = 30.0
 STARVED_ALARM_S      = 10.0    # log an IDLE alarm if the pick queue stays empty this long
 
 # --------------------------------------------------------------------------- #
@@ -124,7 +126,14 @@ ROBOT_Y_MAX          = -192.0
 # value that lands in (or just past) its tolerance band.
 BOUNDARY_TOLERANCE_MM = 0.1     # > TSL3000 0.001mm dead-zone; safe mechanical margin
 
-X_OPT                = 0.0      # static optimal pick X (middle of work envelope)
+# Static rendezvous X. Moved UPSTREAM (toward ROBOT_X_MIN) to cut the chase/drift
+# distance to ~25%: the old catch point was mid-envelope X=0, i.e. 207 mm from the
+# ROBOT_X_MIN pre-position; now we catch 25% of that distance from it.
+#   X_OPT = ROBOT_X_MIN + 0.25*(0.0 - ROBOT_X_MIN) = -155.25 mm
+# VERIFY ON THE ROBOT: (a) the Y envelope [ROBOT_Y_MIN, ROBOT_Y_MAX] is reachable
+# at this X in LEFTY; (b) feasibility t_obj(X_OPT) >= t_rob + descent at the belt
+# speed — a faster belt shrinks the catch window and can make 25% unpickable.
+X_OPT                = ROBOT_X_MIN + 0.25 * (0.0 - ROBOT_X_MIN)   # = -155.25 mm
 LATENCY_OFFSET       = 0.05     # s — TCP + mechanical accel / valve lead compensation
 
 # --- TCP coordinate-ACK handshake (comms.robot_link <-> robot_scara SCOL) ---
