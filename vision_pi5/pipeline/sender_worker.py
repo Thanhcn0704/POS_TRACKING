@@ -13,7 +13,7 @@ import threading
 from vision_pi5.config import (
     C_FIXED, TRACK_TIMEOUT_S, X_OPT, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
     Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
-    R_ENC,
+    R_ENC, STARVED_ALARM_S,
 )
 from vision_pi5.processing import trajectory as traj
 from vision_pi5.processing.predictor import get_predictor
@@ -25,6 +25,8 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
     cmd_seq       = 0          # monotonic command id echoed back in each ACK
     predictor     = get_predictor()
     paused        = False      # safe-state pause latch (UART loss / encoder fault)
+    last_nonempty = time.monotonic()   # last time the pick queue held an object (R1 idle alarm)
+    last_starve_log = 0.0
     if sender_lock is None:
         sender_lock = threading.Lock()
 
@@ -70,7 +72,18 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
         try:
             entry = result_queue.get(timeout=0.1)
         except queue.Empty:
+            now = time.monotonic()
+            if now - last_nonempty >= STARVED_ALARM_S:
+                with sender_lock:
+                    sender_state["starved"] = True
+                if now - last_starve_log >= STARVED_ALARM_S:
+                    last_starve_log = now
+                    print(f"[SENDER] IDLE — hang doi pick rong {now - last_nonempty:.0f}s "
+                          f"(khong co vat moi; robot dang cho tai bien).")
             continue
+        last_nonempty = time.monotonic()
+        with sender_lock:
+            sender_state["starved"] = False
 
         now        = time.monotonic()
         elapsed    = now - entry["captured_at"]    # wall-clock: queue-staleness watchdog only

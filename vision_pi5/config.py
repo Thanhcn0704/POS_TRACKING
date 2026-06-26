@@ -91,6 +91,7 @@ NEW_OBJECT_MIN_DIST  = 30.0
 # Must exceed the real belt transit (~16 s measured) or in-flight objects are
 # discarded before reaching X_OPT. Raise this if the belt is slower / longer.
 TRACK_TIMEOUT_S      = 20.0
+STARVED_ALARM_S      = 10.0    # log an IDLE alarm if the pick queue stays empty this long
 
 # --------------------------------------------------------------------------- #
 #  Offset calibration defaults
@@ -165,17 +166,22 @@ Z_SAFE               = 146.439  # clearance / cross-conveyor travel height (was 
 Z_PICK               = 28.000   # cup-contact surface depth where the vacuum compresses
                                 # (measured; safe to adjust this one line)
 Z_PLACE              = 14.000
-T1_X                 = 138.638
-T1_Y                 = -7.386
+# Place teach points (taught on the pendant; mirrored here for last-pose tracking).
+# Each up/down pair shares X,Y -> the place descent is a clean VERTICAL stroke:
+#   circle  T2 up (Z147) / T1 down (Z18)  @ (220.0,  -24.0)
+#   square  T4 up (Z147) / T3 down (Z18)  @ (310.0,   -7.0)
+#   tri     T6 up (Z147) / T5 down (Z18)  @ (265.0, -260.0)
+T1_X                 = 220.000
+T1_Y                 = -24.000
 
-T2_X                 = 225.073
-T2_Y                 = 11.546
+T2_X                 = 220.000
+T2_Y                 = -24.000
 T2_Z                 = 147.000
-T4_X                 = 294.056
-T4_Y                 = 0.112
+T4_X                 = 310.000
+T4_Y                 = -7.000
 T4_Z                 = 147.000
-T6_X                 = 354.829
-T6_Y                 = 10.050
+T6_X                 = 265.000
+T6_Y                 = -260.000
 T6_Z                 = 147.000
 
 LAST_STOP_BY_SHAPE_CODE = {

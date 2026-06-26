@@ -199,6 +199,27 @@ def test_pulse_advance_makes_far_snapshot_pickable():
     assert not link.boundary_calls
 
 
+def test_idle_alarm_sets_starved_flag():
+    # Empty queue past STARVED_ALARM_S -> sender flags 'starved' (R1 idle alarm).
+    _install_fakes(t_rob=0.1, belt_speed=2000.0)
+    orig = sw.STARVED_ALARM_S
+    sw.STARVED_ALARM_S = 0.05
+    try:
+        stop  = threading.Event()
+        link  = FakeLink(stop_event=None)
+        rq    = queue.Queue(maxsize=config.PICK_QUEUE_MAX)   # stays empty
+        state = _state()
+        t = threading.Thread(target=sw.thread_sender,
+                             args=(rq, state, stop, 28.0, link), daemon=True)
+        t.start()
+        time.sleep(0.3)
+        stop.set(); t.join(timeout=1.0)
+        assert state.get("starved") is True, "empty queue should raise the idle/starved flag"
+        assert not link.pick_calls and not link.boundary_calls
+    finally:
+        sw.STARVED_ALARM_S = orig
+
+
 def test_safe_state_pause_blocks_dispatch():
     # Safe-state reports a fault -> sender must NOT dispatch, must fail-safe the
     # vacuum OFF, and the thread must survive the sustained pause.

@@ -137,6 +137,7 @@ def main():
         "belt_speed":   0.0,
         "paused":       False,
         "fault":        "",
+        "starved":      False,
     }
 
     print("\nPOINT DATA               UNIT: mm")
