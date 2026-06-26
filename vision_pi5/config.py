@@ -46,7 +46,15 @@ UART_TELEMETRY_HZ  = 10            # STM32 telemetry cadence (informational)
 # --- Heartbeat (UART link-health indicator; does NOT gate the pipeline) ----- #
 HEARTBEAT_PING_INTERVAL_S = 0.5    # how often the Pi pings the STM32
 HEARTBEAT_TIMEOUT_S       = 1.5    # no ACK in this window -> Communication Fault
-BELT_SPEED_EMA_ALPHA      = 0.25   # smoothing on the Pi-derived belt speed / pulse rate
+BELT_SPEED_EMA_ALPHA      = 0.25   # legacy EMA; the Kalman filter below now smooths speed/freq
+
+# Belt pulse-rate Kalman filter (de-jitters pulse_frequency_hz vs. conveyor
+# vibration; supersedes the EMA above). Tune against observed jitter — the
+# steady-state gain is ~ sqrt(Q/R): raise Q to trust measurements (faster,
+# noisier), raise R to trust the model (smoother, slower). Defaults give an
+# effective gain ~0.10 (smoother than the old 0.25 EMA).
+KALMAN_Q = 50.0       # process-noise variance, (pulses/s)^2 per step
+KALMAN_R = 5000.0     # measurement-noise variance, (pulses/s)^2
 
 # --- SCARA kinematic limits (geometric travel-time fallback only) ----------- #
 # UNVERIFIED mechanical boundaries — confirm against the THL400 / TSL3000 spec

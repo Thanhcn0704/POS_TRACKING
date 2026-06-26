@@ -18,13 +18,16 @@ import time
 
 from vision_pi5.comms import uart_protocol as proto
 from vision_pi5 import config as _cfg
+from vision_pi5.processing.kalman import KalmanFilter1D
 
 # Hardware constants live in vision_pi5/config.py (single source of truth);
 # these are thin local aliases so existing references and tooling keep working.
 UART_PORT   = _cfg.UART_PORT
 BAUDRATE    = _cfg.UART_BAUD
 MM_PER_TICK = _cfg.R_ENC                 # mm/pulse — recalibrate: tools/calibrate_encoder.py
-EMA_ALPHA   = _cfg.BELT_SPEED_EMA_ALPHA
+EMA_ALPHA   = _cfg.BELT_SPEED_EMA_ALPHA  # legacy; KF (below) now smooths speed/freq
+KALMAN_Q    = _cfg.KALMAN_Q
+KALMAN_R    = _cfg.KALMAN_R
 
 _data_lock  = threading.Lock()
 _relay_lock = threading.Lock()
@@ -154,12 +157,11 @@ def get_uart_status() -> bool:
 
 class _RxState:
     """Per-thread decode state for the telemetry EMA filter."""
-    __slots__ = ("ema_speed", "ema_freq", "has_prev_sample", "prev_ticks",
+    __slots__ = ("kf_freq", "has_prev_sample", "prev_ticks",
                  "prev_time", "consecutive_errors")
 
     def __init__(self):
-        self.ema_speed          = 0.0
-        self.ema_freq           = 0.0
+        self.kf_freq            = KalmanFilter1D(KALMAN_Q, KALMAN_R)
         self.has_prev_sample    = False
         self.prev_ticks         = 0
         self.prev_time          = 0.0
@@ -185,22 +187,21 @@ def _decode_telemetry(frame, st):
     if st.has_prev_sample:
         dt = now - st.prev_time
         if dt > 0.0:
-            d_ticks       = abs(ticks_abs - st.prev_ticks)
-            inst_freq     = d_ticks / dt                    # pulses / second
-            inst_speed    = inst_freq * MM_PER_TICK         # mm / second
-            st.ema_freq   = EMA_ALPHA * inst_freq  + (1 - EMA_ALPHA) * st.ema_freq
-            st.ema_speed  = EMA_ALPHA * inst_speed + (1 - EMA_ALPHA) * st.ema_speed
+            d_ticks   = abs(ticks_abs - st.prev_ticks)
+            inst_freq = d_ticks / dt                        # pulses / second (raw, jittery)
+            filt_freq = st.kf_freq.update(inst_freq)        # 1-D Kalman de-jitter
+        else:
+            filt_freq = st.kf_freq.value
     else:
         st.has_prev_sample = True
-        st.ema_speed       = 0.0
-        st.ema_freq        = 0.0
+        filt_freq          = st.kf_freq.value               # 0.0 until the first delta
 
     st.prev_ticks = ticks_abs
     st.prev_time  = now
 
     with _data_lock:
-        current_belt_speed    = st.ema_speed
-        current_pulse_freq_hz = st.ema_freq
+        current_pulse_freq_hz = filt_freq
+        current_belt_speed    = filt_freq * MM_PER_TICK     # consistent: speed = freq * mm/pulse
         current_total_ticks   = ticks_val
 
     st.consecutive_errors = 0
@@ -276,7 +277,7 @@ def _process_rx_buffer(buffer, st):
 
 
 def thread_uart_receiver(stop_event: threading.Event):
-    global current_belt_speed, _ser, _last_ack_time, uart_link_ok, _fault_logged
+    global current_belt_speed, current_pulse_freq_hz, _ser, _last_ack_time, uart_link_ok, _fault_logged
 
     _open_serial()
 
@@ -320,9 +321,10 @@ def thread_uart_receiver(stop_event: threading.Event):
         except serial.SerialException as e:
             print(f"[UART] Loi phan cung: {e}. Dang thu ket noi lai...")
             with _data_lock:
-                current_belt_speed = 0.0
+                current_belt_speed    = 0.0
+                current_pulse_freq_hz = 0.0
             st.has_prev_sample = False
-            st.ema_speed       = 0.0
+            st.kf_freq.reset()
             with _status_lock:
                 uart_link_ok   = False
                 _last_ack_time = time.monotonic()   # reset grace on reconnect
