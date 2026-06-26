@@ -17,16 +17,16 @@ POS_TRACKING/
 │   │   ├── robot_link.py          # RobotLink: TCP framing + REQ/ARRIVED/DONE
 │   │   └── uart_protocol.py       # UART wire format (headers, encoders, checksum)
 │   ├── vision/
-│   │   ├── detection.py           # run_detection(), contour_fully_inside_roi()
+│   │   ├── detection.py           # detect_objects() [all] / run_detection() [largest], contour_fully_inside_roi()
 │   │   ├── shape.py               # classify_shape()
 │   │   └── geometry.py            # pixel_to_robot()
 │   ├── processing/
 │   │   ├── trajectory.py          # evaluate(): Static-Coord/Temporal-Trigger (pure)
 │   │   └── predictor.py           # RobotTimePredictor (ML + geometric fallback)
 │   ├── tracking/
-│   │   └── tracker.py             # is_new_object() (naive dist; → IoU/SORT later)
+│   │   └── tracker.py             # MultiObjectTracker (per-id belt-projected association)
 │   ├── pipeline/
-│   │   ├── detect_worker.py       # thread_detect
+│   │   ├── detect_worker.py       # thread_detect (detect-all → track → enqueue per id)
 │   │   ├── sender_worker.py       # thread_sender (executes trajectory verdicts)
 │   │   └── display_worker.py      # thread_display (HUD)
 │   └── calibration/

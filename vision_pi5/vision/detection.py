@@ -1,7 +1,10 @@
-"""Object detection — HSV threshold -> contours -> single best valid object.
+"""Object detection — HSV threshold -> contours -> valid object(s).
 
-Filters by pixel area, solidity, ROI containment, and physical size (mm), then
-returns the largest survivor as a dict (centroid, robot coords, shape, etc.).
+Filters by pixel area, solidity, ROI containment, and physical size (mm). Two
+entry points share the same filtering + projection:
+  * detect_objects()  -> EVERY survivor as a dict (multi-object tracking).
+  * run_detection()   -> the single largest survivor (calibration / legacy).
+Each object dict carries centroid, robot coords, shape, area, etc.
 """
 
 import numpy as np
@@ -33,8 +36,53 @@ def contour_fully_in_frame(contour, frame_w, frame_h, margin):
             and (x + w) <= frame_w - margin and (y + h) <= frame_h - margin)
 
 
-def run_detection(frame, roi_mask, hsv_params,
+def _build_object(contour, pixel_area, solidity, phys_area, max_dim,
                   H, h_cam, h_obj, x_scale, x_bias, y_offset):
+    """Project one validated contour to a full object dict, or None if degenerate."""
+    M = cv2.moments(contour)
+    if M["m00"] == 0:
+        return None
+
+    cx_f = M["m10"] / M["m00"]
+    cy_f = M["m01"] / M["m00"]
+
+    robot_x, robot_y = pixel_to_robot(
+        cx_f, cy_f, H, h_cam, h_obj, x_scale, x_bias, y_offset)
+
+    rect  = cv2.minAreaRect(contour)
+    angle = rect[2]
+    if rect[1][0] < rect[1][1]:
+        angle += 90.0
+    theta = angle % 360.0
+
+    shape_name, circularity, vertices = classify_shape(contour)
+
+    return {
+        "cx":          int(round(cx_f)),
+        "cy":          int(round(cy_f)),
+        "robot_x":     robot_x,
+        "robot_y":     robot_y,
+        "theta":       theta,
+        "contour":     contour,
+        "rect":        rect,
+        "solidity":    solidity,
+        "area":        pixel_area,
+        "phys_area":   phys_area,
+        "max_dim":     max_dim,
+        "shape":       shape_name,
+        "circularity": circularity,
+        "shape_code":  SHAPE_CODE.get(shape_name, SHAPE_CODE_DEFAULT),
+    }
+
+
+def detect_objects(frame, roi_mask, hsv_params,
+                   H, h_cam, h_obj, x_scale, x_bias, y_offset):
+    """Return (list_of_object_dicts, mask) — EVERY contour passing all gates.
+
+    Same per-contour filtering as run_detection (area, solidity, ROI/FOV
+    containment, physical size + dim), but does not collapse to one object, so a
+    multi-object frame yields every survivor for the tracker to associate by id.
+    """
     frame_h, frame_w = frame.shape[:2]
     h_min, h_max, s_min, s_max, v_min, v_max = hsv_params
     lower = np.array([h_min, s_min, v_min])
@@ -53,10 +101,10 @@ def run_detection(frame, roi_mask, hsv_params,
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    objects = []
     if not contours:
-        return None, mask
+        return objects, mask
 
-    valid = []
     for c in contours:
         a = cv2.contourArea(c)
         if not (AREA_MIN < a < AREA_MAX):
@@ -97,44 +145,23 @@ def run_detection(frame, roi_mask, hsv_params,
         if not (PHYSICAL_DIM_MIN < max_dim < PHYSICAL_DIM_MAX):
             continue
 
-        valid.append((a, sol, c, phys_area, max_dim))
+        obj = _build_object(c, a, sol, phys_area, max_dim,
+                            H, h_cam, h_obj, x_scale, x_bias, y_offset)
+        if obj is not None:
+            objects.append(obj)
 
-    if not valid:
+    return objects, mask
+
+
+def run_detection(frame, roi_mask, hsv_params,
+                  H, h_cam, h_obj, x_scale, x_bias, y_offset):
+    """Single largest valid object as (dict_or_None, mask) — legacy / calibration.
+
+    Thin wrapper over detect_objects; kept for offset calibration which expects
+    exactly one reference object in view.
+    """
+    objects, mask = detect_objects(
+        frame, roi_mask, hsv_params, H, h_cam, h_obj, x_scale, x_bias, y_offset)
+    if not objects:
         return None, mask
-
-    pixel_area, solidity, best, phys_area, max_dim = max(valid, key=lambda t: t[0])
-
-    M = cv2.moments(best)
-    if M["m00"] == 0:
-        return None, mask
-
-    cx_f = M["m10"] / M["m00"]
-    cy_f = M["m01"] / M["m00"]
-
-    robot_x, robot_y = pixel_to_robot(
-        cx_f, cy_f, H, h_cam, h_obj, x_scale, x_bias, y_offset)
-
-    rect  = cv2.minAreaRect(best)
-    angle = rect[2]
-    if rect[1][0] < rect[1][1]:
-        angle += 90.0
-    theta = angle % 360.0
-
-    shape_name, circularity, vertices = classify_shape(best)
-
-    return {
-        "cx":          int(round(cx_f)),
-        "cy":          int(round(cy_f)),
-        "robot_x":     robot_x,
-        "robot_y":     robot_y,
-        "theta":       theta,
-        "contour":     best,
-        "rect":        rect,
-        "solidity":    solidity,
-        "area":        pixel_area,
-        "phys_area":   phys_area,
-        "max_dim":     max_dim,
-        "shape":       shape_name,
-        "circularity": circularity,
-        "shape_code":  SHAPE_CODE.get(shape_name, SHAPE_CODE_DEFAULT),
-    }, mask
+    return max(objects, key=lambda o: o["area"]), mask

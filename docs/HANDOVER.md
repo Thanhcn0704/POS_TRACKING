@@ -55,16 +55,16 @@ POS_TRACKING/
 │  │  ├─ uart_comm.py               # serial driver, EMA speed filter, heartbeat
 │  │  └─ camera.py                  # thread_capture
 │  ├─ vision/
-│  │  ├─ detection.py               # run_detection (HSV mask + contour)
+│  │  ├─ detection.py               # detect_objects (all) / run_detection (largest)
 │  │  ├─ shape.py                   # circle/square/triangle classification
 │  │  └─ geometry.py                # homography + parallax + offset → robot coords
 │  ├─ processing/
 │  │  ├─ trajectory.py              # evaluate() — PICK/WAIT/HOLD/DISCARD/REJECT (pure fn)
 │  │  └─ predictor.py               # robot travel-time: ML model + geometric fallback
 │  ├─ tracking/
-│  │  └─ tracker.py                 # is_new_object (distance de-dup)
+│  │  └─ tracker.py                 # MultiObjectTracker (per-id belt-projected association)
 │  ├─ pipeline/
-│  │  ├─ detect_worker.py           # thread_detect — detect→EMA→stable→enqueue
+│  │  ├─ detect_worker.py           # thread_detect — detect-all→track→enqueue per id
 │  │  ├─ sender_worker.py           # thread_sender — decision exec + vacuum timer
 │  │  └─ display_worker.py          # thread_display — early-return if no_display
 │  └─ calibration/

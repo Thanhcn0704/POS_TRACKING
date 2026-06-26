@@ -52,14 +52,13 @@ Belt speed/ticks live in `uart_comm` under `_data_lock`, read via `get_belt_spee
 | Stage | Where | What happens |
 |-------|-------|--------------|
 | Frame grab | `hardware/camera.thread_capture` | pushes frames to `frame_queue` (maxsize 2; oldest dropped when full → newest-frame bias) |
-| Segmentation | `vision/detection.run_detection` | HSV threshold (`hsv_params_ref`) ∧ ROI mask → largest contour passing area/solidity gates |
+| Segmentation | `vision/detection.detect_objects` | HSV threshold (`hsv_params_ref`) ∧ ROI mask → **every** contour passing area/solidity/FOV/physical-size gates (`run_detection` = single largest, for calibration) |
 | Shape class | `vision/shape.py` | circle/square/triangle via circularity / aspect / vertex-count thresholds → `shape`,`shape_code` (1/2/3, default 0) |
 | Coord extraction | `vision/geometry.py` | pixel centroid → **homography H** → **parallax** correction (`h_cam`,`h_obj`) → **offset** calib (`x_scale,x_bias,y_offset`) → `robot_x`,`robot_y` (mm) |
-| Smoothing | `detect_worker` | EMA `α=0.25` on `robot_x/robot_y`; **stability gate** `STABLE_TIME_S=0.12s` then **lock** the shape |
-| De-dup | `tracking.tracker.is_new_object` | rejects a re-detection within `NEW_OBJECT_MIN_DIST=30mm` of the last enqueued object |
-| Enqueue | `detect_worker` | one `pick_entry = {x,y,shape,shape_code,captured_at,belt_speed,cmd1_sent}` → `result_queue` (drops oldest if full) + overlay → `display_queue` |
+| Tracking | `tracking.tracker.MultiObjectTracker` | greedy belt-projected association → per-object **track id**; per-track EMA, shape vote, stability + area-settle; confirms once for picking |
+| Enqueue | `detect_worker` | one `pick_entry = {x,y,shape,shape_code,captured_at,pulse_snap,belt_speed,cmd1_sent,track_id}` per confirmed track → `result_queue` (drops oldest if full) + most-urgent-track overlay → `display_queue` |
 
-**Key fact:** the pipeline tracks **one contour per frame** and dedups by distance — there is **no persistent multi-object identity** (see critique R5).
+**Key fact:** the pipeline now tracks **every object in the frame** with a persistent identity (`MultiObjectTracker`); each is enqueued exactly once and the sender serves them earliest-deadline-first.
 
 ---
 
@@ -153,8 +152,8 @@ A transient controller TCP-send spike > 50 ms → spurious `ABORT` → retry; me
 **B9 — Open-loop vacuum on a generic predictor.**
 With sklearn missing, `t_rob` is the **geometric** model of a *generic* trapezoidal profile, not this SCARA. Vacuum lead (`t_rob - LATENCY_OFFSET`) can be off by 100s of ms → early/late grip. The dead-reckoning relay has no position feedback to correct it.
 
-**B10 — Single-object tracker (SCOPE/CORRECTNESS).**
-Distance-only `is_new_object` + one-contour-per-frame cannot disambiguate two objects in the ROI; identity can swap, and `cmd1_sent` is carried on an entry that may not correspond to the same physical part.
+**B10 — Single-object tracker (RESOLVED — Task 8 / second-phase #2).**
+The old distance-only `is_new_object` + one-contour-per-frame is replaced by `vision/detection.detect_objects` (all survivors) + `tracking.tracker.MultiObjectTracker` (greedy belt-projected association → per-object id, enqueued once). Two objects in the ROI now keep distinct identities and `cmd1_sent` rides the correct track. *Not yet bench-validated on the live line.*
 
 **B11 — Sum checksum is order-independent (LOW).**
 `frame_checksum` sums fields mod 65536, so a transposition that preserves the sum collides. Low practical risk (distinct magnitudes + `+1000` bias), and a CRC is awkward in SCOL — note and accept, or add a positional weight.

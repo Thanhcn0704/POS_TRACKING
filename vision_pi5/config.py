@@ -85,8 +85,22 @@ OBJECT_CLEAR_SECONDS = 0.5
 # --------------------------------------------------------------------------- #
 #  Pick queue / tracking
 # --------------------------------------------------------------------------- #
-PICK_QUEUE_MAX       = 4
-NEW_OBJECT_MIN_DIST  = 30.0
+# Sized to hold every object the FOV can show at once (multi-object tracker can
+# confirm several per frame); the sender drains all and serves earliest-deadline.
+PICK_QUEUE_MAX       = 8
+
+# --- Multi-object tracker (tracking.tracker.MultiObjectTracker) ------------- #
+# Identity across frames so several objects in one FOV are each enqueued exactly
+# once (supersedes the old single-target distance gate).
+#   TRACK_ASSOC_MAX_DIST_MM: max belt-projected gap (mm) to call a detection the
+#     SAME object as an existing track. Keep < the minimum real inter-object
+#     spacing on the belt, and > per-frame motion (belt_speed / FPS) + jitter.
+#   TRACK_MAX_MISS_S: drop a track after this long with no matching detection
+#     (object left the FOV, or detection flickered out). Must outlast brief HSV
+#     threshold dropouts but be short enough to free the id before a new object
+#     reaches the same spot.
+TRACK_ASSOC_MAX_DIST_MM = 30.0
+TRACK_MAX_MISS_S        = 0.40
 # Queue-staleness watchdog (NOT tracking math — position comes from the encoder).
 # MUST exceed the worst-case t_obj (transit time to X_OPT). Field log showed an
 # object enqueued 22.5 s upstream, so 20 s discarded it ~2.5 s before the pick ->

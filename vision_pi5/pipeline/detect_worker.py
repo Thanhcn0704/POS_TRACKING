@@ -1,16 +1,16 @@
-"""Detect worker — grab frame -> detect -> EMA smooth -> enqueue pick targets.
+"""Detect worker — grab frame -> detect ALL objects -> track -> enqueue picks.
 
-Pulls frames from frame_queue, runs detection, locks the shape once stable,
-de-duplicates against the last-enqueued object (tracking.tracker), and pushes
-pick entries to result_queue plus an overlay payload to display_queue.
+Pulls frames from frame_queue, detects every valid object, feeds them to the
+multi-object tracker (tracking.tracker), and enqueues each confirmed track to
+result_queue exactly once. The display overlay still shows one object — the
+most-urgent track — so display_worker is unchanged.
 """
 
 import time
 import queue
 
-from vision_pi5.config import EMA_ALPHA, STABLE_TIME_S, AREA_SETTLE_FRAC
-from vision_pi5.vision.detection import run_detection
-from vision_pi5.tracking.tracker import is_new_object
+from vision_pi5.vision.detection import detect_objects
+from vision_pi5.tracking.tracker import MultiObjectTracker
 from vision_pi5.hardware import uart_comm
 
 
@@ -18,20 +18,10 @@ def thread_detect(frame_queue, result_queue, display_queue,
                   roi_mask_ref, hsv_params_ref,
                   H, h_cam, h_obj, correction_ref,
                   stop_event):
-    ema_x             = None
-    ema_y             = None
-    stable_since      = None
-    fps_counter       = 0
-    fps_ts            = time.monotonic()
-    fps_val           = 0.0
-    locked_shape      = None
-    locked_shape_code = None
-    enqueued_this_obj = False
-    prev_area         = None     # last frame's contour area (Task 3 area-settled gate)
-
-    last_enq_x    = None
-    last_enq_y    = None
-    last_enq_time = None
+    tracker     = MultiObjectTracker()
+    fps_counter = 0
+    fps_ts      = time.monotonic()
+    fps_val     = 0.0
 
     print("[DETECT] Bat dau")
     while not stop_event.is_set():
@@ -51,98 +41,54 @@ def thread_detect(frame_queue, result_queue, display_queue,
         hsv_params = hsv_params_ref[0]
         roi_mask   = roi_mask_ref[0]
 
-        raw, mask = run_detection(
+        objects, mask = detect_objects(
             frame, roi_mask, hsv_params,
             H, h_cam, h_obj, x_scale, x_bias, y_offset)
 
-        belt_speed = uart_comm.get_belt_speed()
+        belt_speed  = uart_comm.get_belt_speed()
+        now         = time.monotonic()
+        pulse_count = uart_comm.get_absolute_pulse_count()
 
-        is_stable = False
-        if raw is not None:
-            if ema_x is None:
-                ema_x        = raw["robot_x"]
-                ema_y        = raw["robot_y"]
-                stable_since = None
-            else:
-                ema_x = EMA_ALPHA * raw["robot_x"] + (1 - EMA_ALPHA) * ema_x
-                ema_y = EMA_ALPHA * raw["robot_y"] + (1 - EMA_ALPHA) * ema_y
-                if stable_since is None:
-                    stable_since = time.monotonic()
+        new_entries, tracks = tracker.update(objects, belt_speed, now, pulse_count)
 
-            stable_secs = (time.monotonic() - stable_since) if stable_since else 0.0
-            is_stable   = stable_secs >= STABLE_TIME_S
+        # Enqueue every track confirmed this frame (identity -> once per object).
+        for entry in new_entries:
+            if result_queue.full():
+                try:
+                    result_queue.get_nowait()
+                    print("[DETECT] Queue day — xoa entry cu nhat")
+                except queue.Empty:
+                    pass
+            try:
+                result_queue.put_nowait(entry)
+                print(f"[DETECT] Enqueue vat #{entry['track_id']}: "
+                      f"X={entry['x']:.1f} Y={entry['y']:.1f} "
+                      f"shape={entry['shape']} "
+                      f"v={belt_speed:.1f}mm/s "
+                      f"queue_size~{result_queue.qsize()}")
+            except queue.Full:
+                pass
 
-            # Area-settled gate: trust the silhouette only once the contour area
-            # has stopped growing (object fully entered, no longer crossing in).
-            area         = raw["area"]
-            area_settled = (prev_area is not None
-                            and abs(area - prev_area) <= AREA_SETTLE_FRAC * max(area, 1.0))
-            prev_area    = area
-
-            if is_stable and area_settled and locked_shape is None:
-                locked_shape      = raw["shape"]
-                locked_shape_code = raw["shape_code"]
-                print(f"[DETECT] LOCK shape={locked_shape} code={locked_shape_code}")
-
-            raw["shape"]      = locked_shape      if locked_shape      is not None else raw["shape"]
-            raw["shape_code"] = locked_shape_code if locked_shape_code is not None else raw["shape_code"]
-
+        # ---- Display payload: show the single most-urgent track (HUD unchanged). ----
+        primary = tracker.primary_track()
+        if primary is not None:
+            raw = dict(primary.det)
+            if primary.locked_shape is not None:
+                raw["shape"]      = primary.locked_shape
+                raw["shape_code"] = primary.locked_code
             payload = {
                 "frame":       frame,
                 "mask":        mask,
                 "raw":         raw,
-                "ema_x":       ema_x,
-                "ema_y":       ema_y,
-                "is_stable":   is_stable,
-                "stable_secs": stable_secs,
+                "ema_x":       primary.ema_x,
+                "ema_y":       primary.ema_y,
+                "is_stable":   primary.is_stable(now),
+                "stable_secs": now - primary.created_at,
                 "fps":         fps_val,
                 "belt_speed":  belt_speed,
                 "has_object":  True,
             }
-
-            if is_stable and locked_shape is not None and not enqueued_this_obj:
-                current_x = ema_x
-
-                if is_new_object(current_x, ema_y, last_enq_x, last_enq_y,
-                                 last_enq_time, belt_speed, time.monotonic()):
-                    pick_entry = {
-                        "x":           current_x,
-                        "y":           ema_y,
-                        "shape":       locked_shape,
-                        "shape_code":  locked_shape_code,
-                        "captured_at": time.monotonic(),
-                        "pulse_snap":  uart_comm.get_absolute_pulse_count(),
-                        "belt_speed":  belt_speed,
-                        "cmd1_sent":   False,
-                    }
-                    if result_queue.full():
-                        try:
-                            result_queue.get_nowait()
-                            print("[DETECT] Queue day — xoa entry cu nhat")
-                        except queue.Empty:
-                            pass
-                    try:
-                        result_queue.put_nowait(pick_entry)
-                        last_enq_x    = current_x
-                        last_enq_y    = ema_y
-                        last_enq_time = time.monotonic()
-                        enqueued_this_obj = True
-                        print(f"[DETECT] Enqueue vat: Y={ema_y:.1f} "
-                              f"shape={locked_shape} "
-                              f"v={belt_speed:.1f}mm/s "
-                              f"queue_size~{result_queue.qsize()}")
-                    except queue.Full:
-                        pass
-
         else:
-            ema_x             = None
-            ema_y             = None
-            stable_since      = None
-            locked_shape      = None
-            locked_shape_code = None
-            enqueued_this_obj = False
-            prev_area         = None
-
             payload = {
                 "frame":      frame,
                 "mask":       mask,
