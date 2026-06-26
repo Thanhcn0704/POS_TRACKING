@@ -61,6 +61,15 @@ def test_reject_y_out_of_range():
     assert d.action == traj.REJECT, d
 
 
+def test_reject_y_within_boundary_dead_zone():
+    # Y = -192.05 is inside the raw envelope (<= ROBOT_Y_MAX -192.0) but within the
+    # BOUNDARY_TOLERANCE_MM (0.1mm) buffer of the edge -> must reject so the robot
+    # never sees a coordinate inside the TSL3000 0.001mm comparison dead-zone.
+    edge = config.ROBOT_Y_MAX - 0.05
+    d = traj.evaluate(_entry(y=edge), -100.0, 2000.0, _LAST, _Pred(0.1), 28.0)
+    assert d.action == traj.REJECT, d
+
+
 def test_pick_targets_static_x_opt():
     # PICK always meets at the static X_OPT; confirm t_obj/t_rob populated.
     d = traj.evaluate(_entry(), -100.0, 2000.0, _LAST, _Pred(0.1), 28.0)

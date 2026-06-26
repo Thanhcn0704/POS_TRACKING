@@ -98,6 +98,14 @@ ROBOT_X_MAX          = 207.0
 ROBOT_Y_MIN          = -342.0
 ROBOT_Y_MAX          = -192.0
 
+# TSL3000 floating-point comparison dead-zone: the controller treats any delta
+# <= 0.001 mm as EQUAL, so a coordinate 0.001 mm past a limit slips through the
+# robot's own "IF X > XMAX" boundary check. The Pi therefore enforces the
+# envelope with a buffer LARGER than that dead-zone and rejects near-boundary
+# coordinates BEFORE formatting the frame, so the passive SCARA never receives a
+# value that lands in (or just past) its tolerance band.
+BOUNDARY_TOLERANCE_MM = 0.1     # > TSL3000 0.001mm dead-zone; safe mechanical margin
+
 X_OPT                = 0.0      # static optimal pick X (middle of work envelope)
 LATENCY_OFFSET       = 0.05     # s — TCP + mechanical accel / valve lead compensation
 

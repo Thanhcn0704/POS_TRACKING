@@ -20,7 +20,7 @@ Actions:
 from collections import namedtuple
 
 from vision_pi5.config import (
-    X_OPT, LATENCY_OFFSET, ROBOT_Y_MIN, ROBOT_Y_MAX,
+    X_OPT, LATENCY_OFFSET, ROBOT_Y_MIN, ROBOT_Y_MAX, BOUNDARY_TOLERANCE_MM,
 )
 
 PICK    = "PICK"
@@ -54,8 +54,10 @@ def evaluate(entry, x_current, v_belt, last_robot, predictor, z_val):
 
     t_obj = (X_OPT - x_current) / v_belt
 
-    # Y must be inside the work envelope (X is always X_OPT or ROBOT_X_MIN).
-    if not (ROBOT_Y_MIN <= y_val <= ROBOT_Y_MAX):
+    # Y must be inside the work envelope, with a safety buffer LARGER than the
+    # TSL3000's 0.001mm comparison dead-zone, so the robot never receives a
+    # near-boundary coordinate its own IF would mis-evaluate as in-range.
+    if not (ROBOT_Y_MIN + BOUNDARY_TOLERANCE_MM <= y_val <= ROBOT_Y_MAX - BOUNDARY_TOLERANCE_MM):
         return Decision(REJECT, t_obj, None, x_current)
 
     t_rob = predictor.predict(
