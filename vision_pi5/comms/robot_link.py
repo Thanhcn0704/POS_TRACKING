@@ -1,10 +1,16 @@
 """TCP link to the SCARA controller — buffered, fragmentation-safe, responsive.
 
-Protocol (newline/CR-delimited ASCII):
-    Robot -> Pi : "REQ"        (asking for a target)
-    Pi -> Robot : "1\\r{x}\\r{y}\\r0.000\\r0\\r"          CMD=1 wait-at-boundary
-                  "2\\r{x}\\r{y}\\r{c}\\r{shape}\\r"        CMD=2 pick
-    Robot -> Pi : "ARRIVED" (CMD1 done) / "DONE" (CMD2 done) / "NG"/"OUT" (error)
+Verified 3-way handshake. SCOL "Non-protocol" INPUT accepts NUMERIC data only,
+comma-separated, CR-terminated — any non-numeric/control byte (STX/ETX) trips
+controller error 2-046. So the Pi->robot direction carries bare numbers:
+    Robot -> Pi : "REQ"                              (asking for a target)
+    Pi -> Robot : "ID,CMD,X,Y,Z,C,SHP\\r"             (one comma-separated record)
+    Robot -> Pi : "ACK {id} {cksum}"                 (within ACK_TIMEOUT_S)
+    Pi -> Robot : "{GATE_GO}\\r" if checksum matches, else "{GATE_ABORT}\\r"
+    Robot -> Pi : "ARRIVED" (cmd 1) / "DONE" (cmd 2) / "NG"/"OUT" (error)
+
+The robot->Pi direction is PRINT text and parsed leniently; the numeric-only
+rule applies only to what the robot reads via INPUT.
 """
 
 import socket
@@ -13,7 +19,7 @@ import time
 
 from vision_pi5.config import (
     Z_LIFT, PLACE_LABEL,
-    STX_BYTE, ETX_BYTE, ACK_TIMEOUT_S, ACK_RETRIES, CHK_OFFSET,
+    GATE_GO, GATE_ABORT, ACK_TIMEOUT_S, ACK_RETRIES, CHK_OFFSET,
 )
 
 
@@ -110,20 +116,50 @@ class RobotLink:
     def send_line(self, payload):
         self.sock.sendall(payload.encode("ascii"))
 
+    def buffreset(self):
+        """Fault-recovery flush so the next REQ/ACK cycle starts clean.
+
+        Clears the carried-over RX byte buffer and drains any bytes already
+        queued on the socket (a stale ACK / partial line from a failed
+        exchange). The robot's own fault path does GOTO START and re-emits REQ
+        *after* it receives our abort gate, so discarding what is buffered at
+        fault time cannot drop the fresh REQ. NOTE: this is Pi-internal — never
+        transmit a literal "BUFFRESET" token; a non-numeric byte into the
+        robot's INPUT would itself trip controller error 2-046.
+        """
+        self._rxbuf = b""
+        try:
+            self.sock.setblocking(False)
+            while True:
+                if self.sock.recv(4096) == b"":
+                    break                      # peer closed
+        except (BlockingIOError, OSError):
+            pass                               # nothing more queued
+        finally:
+            try:
+                self.sock.setblocking(True)
+            except OSError:
+                pass
+
+    def initialize(self):
+        """One-time startup sync: drop any boot-time garbage before the first
+        REQ so the handshake begins from a known-clean buffer."""
+        self.buffreset()
+        print("[ROBOT] Link initialised — cho REQ dau tien.")
+
     # ----------------------------------------------------------------- #
-    #  Verified 3-way coordinate handshake
-    #    Pi  -> STX \r id \r cmd \r x \r y \r z \r c \r shp \r ETX \r
-    #    Rbt -> "ACK {id} {cksum}"          (within ACK_TIMEOUT_S)
-    #    Pi  -> "GO"  (ack valid)  |  "ABORT" (timeout/mismatch)
+    #  Verified 3-way coordinate handshake (numeric, comma-separated)
+    #    Pi  -> "id,cmd,x,y,z,c,shp\r"          (SCOL: INPUT IP1, ID,CMD,X,Y,Z,C,SHP)
+    #    Rbt -> "ACK {id} {cksum}"              (within ACK_TIMEOUT_S)
+    #    Pi  -> GATE_GO (1) ack valid  |  GATE_ABORT (0) timeout/mismatch
     #    Rbt -> "ARRIVED" (cmd 1) | "DONE" (cmd 2)   after the move
     # ----------------------------------------------------------------- #
     def _send_coord_frame(self, cmd_id, cmd, x, y, z, c, shape_code):
-        fields = (f"{cmd_id}\r{cmd}\r{x:.3f}\r{y:.3f}\r"
-                  f"{z:.3f}\r{c:.3f}\r{shape_code}\r")
-        frame = (bytes([STX_BYTE]) + b"\r"
-                 + fields.encode("ascii")
-                 + bytes([ETX_BYTE]) + b"\r")
-        self.sock.sendall(frame)
+        # SCOL Non-protocol INPUT: numeric only, comma-separated, single CR.
+        # No STX/ETX or any non-numeric byte (those raise controller 2-046).
+        record = (f"{cmd_id},{cmd},{x:.3f},{y:.3f},"
+                  f"{z:.3f},{c:.3f},{shape_code}\r")
+        self.sock.sendall(record.encode("ascii"))
 
     def _wait_ack(self, cmd_id, expected_cksum, timeout_s):
         """Return 'ok' | 'timeout' | 'bad'. Stale ACKs (wrong id) are skipped."""
@@ -172,17 +208,19 @@ class RobotLink:
             if status == "timeout":
                 print(f"[LOI] Robot Comms Timeout — khong nhan ACK trong "
                       f"{ACK_TIMEOUT_S*1000:.0f}ms (id={cmd_id})")
-                self.send_line("ABORT\r")
+                self.send_line(f"{GATE_ABORT}\r")
+                self.buffreset()                 # flush stale bytes before retry
                 return "retry"
             if status == "bad":
                 print(f"[LOI] ACK khong hop le (id={cmd_id}) — gui ABORT")
-                self.send_line("ABORT\r")
+                self.send_line(f"{GATE_ABORT}\r")
+                self.buffreset()
                 return "retry"
 
             # ACK valid -> commit: robot will move on GO.
             if on_commit is not None:
                 on_commit()
-            self.send_line("GO\r")
+            self.send_line(f"{GATE_GO}\r")
             if self.wait_for_signal(done_word):
                 print("[ROBOT] Sequence hoan tat!")
                 return "done"

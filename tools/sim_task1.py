@@ -1,7 +1,7 @@
 """End-to-end handshake simulation — runs entirely on a laptop (no Pi/STM32/Robot).
 
 Spins up a MOCK SCARA controller (a tiny TCP server speaking the real verified
-3-way handshake: REQ -> STX/ETX frame -> ACK(id,cksum) -> GO/ABORT ->
+3-way handshake: REQ -> "id,cmd,x,y,z,c,shp\r" -> ACK(id,cksum) -> 1/0 gate ->
 ARRIVED/DONE) and drives the *actual* RobotLink from vision_pi5 against it over
 a real localhost socket. Complements the socketpair unit tests with a real TCP
 loopback and deliberate fault injection.
@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from vision_pi5.comms.robot_link import RobotLink, frame_checksum
-    from vision_pi5.config import C_FIXED, ACK_RETRIES
+    from vision_pi5.config import C_FIXED, ACK_RETRIES, GATE_GO
 except Exception as e:  # noqa: BLE001
     print(f"[SIM] Could not import RobotLink from vision_pi5: {e!r}")
     print("[SIM] Use an interpreter that has the project deps (cv2/numpy/serial).")
@@ -65,15 +65,12 @@ class _Reader:
         self.buf = self.buf[i + 1:]
         return s
 
-    def frame(self, timeout=5.0):
-        """Read the 9-line frame: STX, id, cmd, x, y, z, c, shp, ETX."""
-        toks = []
-        for _ in range(9):
-            ln = self.line(timeout)
-            if ln is None:
-                return None
-            toks.append(ln)
-        return toks
+    def record(self, timeout=5.0):
+        """Read one comma-separated coordinate record: id,cmd,x,y,z,c,shp."""
+        ln = self.line(timeout)
+        if ln is None:
+            return None
+        return ln.split(",")
 
 
 def _send(conn, text, fragment, frag_delay=0.01):
@@ -125,13 +122,13 @@ def mock_robot(policy, ready_evt, port_box, stop):
         attempt = 0
         while not stop.is_set():
             _send(conn, "REQ\r", frag, fdelay)
-            f = rdr.frame()
+            f = rdr.record()
             if f is None:
                 break
             try:
-                cid = int(f[1]); cmd = int(f[2])
-                x = float(f[3]); y = float(f[4]); z = float(f[5])
-                c = float(f[6]); shp = int(f[7])
+                cid = int(f[0]); cmd = int(f[1])
+                x = float(f[2]); y = float(f[3]); z = float(f[4])
+                c = float(f[5]); shp = int(f[6])
             except (IndexError, ValueError):
                 break
             print(f"        [MOCK-ROBOT] frame id={cid} cmd={cmd} "
@@ -149,7 +146,7 @@ def mock_robot(policy, ready_evt, port_box, stop):
             _send(conn, f"ACK {cid} {cksum}\r", False)   # ACK is time-critical: never dribble
 
             gate = rdr.line(timeout=2.0)
-            if gate != "GO":
+            if gate != str(GATE_GO):
                 attempt += 1
                 continue                         # ABORT/none -> loop, re-REQ
             time.sleep(motion_s)                 # simulate arm travel

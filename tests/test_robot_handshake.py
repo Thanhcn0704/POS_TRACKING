@@ -59,18 +59,14 @@ class MockRobot(threading.Thread):
                 self.sock.sendall(b"REQ\r")
             except OSError:
                 return
-            toks = []
-            while True:
-                line = self._recv_line()
-                if line is None:
-                    return
-                toks.append(line)
-                if line == bytes([config.ETX_BYTE]) or len(toks) > 12:
-                    break
+            line = self._recv_line()         # one comma-separated record: id,cmd,x,y,z,c,shp
+            if line is None:
+                return
+            toks = line.decode("ascii", "ignore").split(",")
             try:
-                cmd_id = int(toks[1]); cmd = int(toks[2])
-                x = float(toks[3]); y = float(toks[4]); z = float(toks[5])
-                c = float(toks[6]); shp = int(toks[7])
+                cmd_id = int(toks[0]); cmd = int(toks[1])
+                x = float(toks[2]); y = float(toks[3]); z = float(toks[4])
+                c = float(toks[5]); shp = int(toks[6])
             except (IndexError, ValueError):
                 return
             self.received.append((cmd_id, cmd, x, y, z, c, shp))
@@ -88,7 +84,7 @@ class MockRobot(threading.Thread):
             gate = self._recv_line()
             if gate is None:
                 return
-            if gate.decode("ascii", "ignore").strip() == "GO":
+            if gate.decode("ascii", "ignore").strip() == str(config.GATE_GO):
                 self.got_go = True
                 self.moved  = True
                 try:
