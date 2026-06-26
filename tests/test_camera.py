@@ -10,9 +10,11 @@ Run:
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import cv2
 
 from vision_pi5 import config
@@ -95,6 +97,54 @@ def test_fps_tolerance_accepts_5994():
     cap = FakeCap(config.CAM_W, config.CAM_H, 59.94)
     assert camera.verify_and_configure(cap) is cap
     assert cap.set_calls == 0
+
+
+def _tmp_npz(**arrays):
+    p = os.path.join(tempfile.mkdtemp(), "cal.npz")
+    np.savez(p, **arrays)
+    return p
+
+
+def test_load_calibration_missing_raises():
+    try:
+        camera.load_calibration(os.path.join(tempfile.mkdtemp(), "nope.npz"))
+        assert False, "expected CalibrationError"
+    except camera.CalibrationError as e:
+        assert "Calibration Invalid" in str(e)
+
+
+def test_load_calibration_valid():
+    H   = np.eye(3)
+    roi = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
+    H2, roi2, mask = camera.load_calibration(_tmp_npz(H=H, roi_pts=roi))
+    assert H2.shape == (3, 3)
+    assert mask.shape == (config.CAM_H, config.CAM_W)
+    assert int((mask > 0).sum()) > 0          # ROI polygon filled
+
+
+def test_load_calibration_missing_key_raises():
+    # Corrupt: H present but roi_pts absent.
+    try:
+        camera.load_calibration(_tmp_npz(H=np.eye(3)))
+        assert False, "expected CalibrationError"
+    except camera.CalibrationError:
+        pass
+
+
+def test_load_calibration_bad_shape_raises():
+    p = _tmp_npz(H=np.eye(2), roi_pts=np.zeros((4, 2), dtype=np.float32))  # H not 3x3
+    try:
+        camera.load_calibration(p)
+        assert False, "expected CalibrationError"
+    except camera.CalibrationError:
+        pass
+
+
+def test_build_roi_mask_shape_and_fill():
+    roi  = np.array([[10, 10], [200, 10], [200, 200], [10, 200]], dtype=np.float32)
+    mask = camera.build_roi_mask(roi)
+    assert mask.shape == (config.CAM_H, config.CAM_W)
+    assert int((mask > 0).sum()) > 0
 
 
 def _run_standalone():

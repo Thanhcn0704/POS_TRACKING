@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 
 from vision_pi5.config import HOMO_FILE
-from vision_pi5.hardware.camera import make_capture
+from vision_pi5.hardware.camera import make_capture, verify_and_configure
 
 
 def calibrate_homography_interactive(cam_id):
@@ -16,6 +16,7 @@ def calibrate_homography_interactive(cam_id):
     print(" BUOC 1: CALIB HE TOA DO & VUNG QUET (ROI)")
     print("="*50)
     cap    = make_capture(cam_id)
+    verify_and_configure(cap)       # open at CAM_W x CAM_H @ CAM_FPS (raises on fault)
     labels = ["Goc Trai-Tren", "Goc Phai-Tren", "Goc Phai-Duoi", "Goc Trai-Duoi"]
     pixel_pts = []
 

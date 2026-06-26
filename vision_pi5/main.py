@@ -14,9 +14,6 @@ import socket
 import argparse
 import threading
 
-import numpy as np
-import cv2
-
 from vision_pi5.config import (
     ROBOT_IP, ROBOT_PORT, HOMO_FILE, OFFSET_CALIB_FILE, PICK_QUEUE_MAX,
     CAM_W, CAM_H, Z_LIFT, PLACE_LABEL, STABLE_TIME_S, EMA_ALPHA,
@@ -24,7 +21,9 @@ from vision_pi5.config import (
 )
 from vision_pi5.comms.robot_link import RobotLink
 from vision_pi5.hardware import uart_comm
-from vision_pi5.hardware.camera import thread_capture
+from vision_pi5.hardware.camera import (
+    thread_capture, load_calibration, build_roi_mask, CalibrationError,
+)
 from vision_pi5.pipeline.detect_worker import thread_detect
 from vision_pi5.pipeline.sender_worker import thread_sender
 from vision_pi5.pipeline.display_worker import thread_display
@@ -77,19 +76,25 @@ def main():
         except ValueError:
             pass
 
-    if os.path.exists(HOMO_FILE):
-        d = np.load(HOMO_FILE)
-        if "roi_pts" not in d:
-            os.remove(HOMO_FILE)
-
-    if not os.path.exists(HOMO_FILE):
-        H, roi_pts = calibrate_homography_interactive(cam_id)
-    else:
-        if input(f"\n{HOMO_FILE} ton tai. Calib lai? (y/n): ").lower() == 'y':
+    # Homography + ROI: recalibrate on request (or via tools.calibrate_homography),
+    # else load the saved calibration. Missing/corrupt -> CalibrationError safety
+    # interlock that blocks the pipeline (item 4). ROI mask is rebuilt dynamically
+    # from roi_pts every startup -- never hardcoded (item 2).
+    do_recalib = (os.path.exists(HOMO_FILE)
+                  and input(f"\n{HOMO_FILE} ton tai. Calib lai? (y/n): ").strip().lower() == 'y')
+    try:
+        if do_recalib:
             H, roi_pts = calibrate_homography_interactive(cam_id)
+            roi_mask   = build_roi_mask(roi_pts)
         else:
-            d = np.load(HOMO_FILE)
-            H, roi_pts = d["H"], d["roi_pts"]
+            H, roi_pts, roi_mask = load_calibration()
+    except CalibrationError as e:
+        print(f"\n[CALIB] !!! {e}")
+        print("[CALIB] >>> SAFETY INTERLOCK: pipeline bi chan. "
+              "Chay 'python3 -m tools.calibrate_homography' truoc.")
+        if sock:
+            sock.close()
+        return
 
     x_scale, x_bias, y_offset = load_offset()
     if os.path.exists(OFFSET_CALIB_FILE):
@@ -107,9 +112,6 @@ def main():
     print(f"\n[CFG] X_SCALE={x_scale:.6f} X_BIAS={x_bias:.4f} Y_OFF={y_offset:.4f}")
     print(f"[CFG] STABLE={STABLE_TIME_S*1000:.0f}ms EMA={EMA_ALPHA} "
           f"AREA={AREA_MIN}-{AREA_MAX} SOLIDITY>={SOLIDITY_MIN}")
-
-    roi_mask = np.zeros((CAM_H, CAM_W), dtype=np.uint8)
-    cv2.fillPoly(roi_mask, [np.int32(roi_pts)], 255)
 
     correction_ref = [(x_scale, x_bias, y_offset)]
     hsv_params_ref = [(0, 179, 0, 60, 140, 255)]

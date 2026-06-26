@@ -10,13 +10,61 @@ import os
 import time
 import queue
 
+import numpy as np
 import cv2
 
-from vision_pi5.config import CAM_W, CAM_H, CAM_FPS, CAM_FPS_TOLERANCE
+from vision_pi5.config import CAM_W, CAM_H, CAM_FPS, CAM_FPS_TOLERANCE, HOMO_FILE
 
 
 class CameraConfigFault(Exception):
     """Camera cannot be configured to the required CAM_W x CAM_H @ CAM_FPS."""
+
+
+class CalibrationError(Exception):
+    """Homography/ROI calibration is missing or corrupt -> safety interlock."""
+
+
+CALIBRATION_INVALID_MSG = ("Critical Error: Calibration Invalid. "
+                           "Please run calibrate_homography.py first.")
+
+
+def build_roi_mask(roi_pts):
+    """Reconstruct the ROI bitmap (CAM_H x CAM_W) from the calibrated polygon.
+
+    The ROI geometry is NOT hardcoded — it is rebuilt every startup from the
+    `roi_pts` saved by calibrate_homography.py, so a FOV/ROI recalibration takes
+    effect with no code change.
+    """
+    roi_mask = np.zeros((CAM_H, CAM_W), dtype=np.uint8)
+    cv2.fillPoly(roi_mask, [np.int32(roi_pts)], 255)
+    return roi_mask
+
+
+def load_calibration(path=None):
+    """Load H + roi_pts from the homography npz and rebuild the ROI mask.
+
+    Returns (H, roi_pts, roi_mask). Raises CalibrationError (safety interlock)
+    if the file is missing or corrupt, so the pipeline never runs on invalid
+    calibration. `path` defaults to config.HOMO_FILE (override for tests).
+    """
+    path = path or HOMO_FILE
+    if not path or not os.path.exists(path):
+        raise CalibrationError(CALIBRATION_INVALID_MSG)
+    try:
+        data    = np.load(path)
+        H       = np.asarray(data["H"], dtype=np.float64)
+        roi_pts = np.asarray(data["roi_pts"], dtype=np.float32)
+    except Exception as e:                       # missing keys / unreadable / not an npz
+        raise CalibrationError(CALIBRATION_INVALID_MSG) from e
+
+    if (H.shape != (3, 3) or roi_pts.ndim != 2
+            or roi_pts.shape[0] < 3 or roi_pts.shape[1] != 2):
+        raise CalibrationError(CALIBRATION_INVALID_MSG)
+
+    roi_mask = build_roi_mask(roi_pts)
+    print(f"[CALIB] Loaded {path} — H(3x3), roi_pts({roi_pts.shape[0]} pts), "
+          f"ROI mask {CAM_W}x{CAM_H}.")
+    return H, roi_pts, roi_mask
 
 
 def _apply_config(cap):

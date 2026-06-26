@@ -12,7 +12,7 @@ from vision_pi5.config import (
     PHYSICAL_AREA_MIN, PHYSICAL_AREA_MAX, PHYSICAL_DIM_MIN, PHYSICAL_DIM_MAX,
     SHAPE_CODE, SHAPE_CODE_DEFAULT,
 )
-from vision_pi5.vision.geometry import pixel_to_robot
+from vision_pi5.vision.geometry import pixel_to_robot, parallax_origin
 from vision_pi5.vision.shape import classify_shape
 
 
@@ -65,10 +65,7 @@ def run_detection(frame, roi_mask, hsv_params,
         c_phys = cv2.perspectiveTransform(c_float, H)
 
         if h_cam > 0 and h_obj > 0:
-            origin_px = np.array([[[0.0, 0.0]]], dtype=np.float32)
-            origin_r  = cv2.perspectiveTransform(origin_px, H)
-            ox = float(origin_r[0][0][0])
-            oy = float(origin_r[0][0][1])
+            ox, oy = parallax_origin(H)          # optical center, not the corner
             sc = (h_cam - h_obj) / h_cam
             c_phys[:, 0, 0] = ox + (c_phys[:, 0, 0] - ox) * sc
             c_phys[:, 0, 1] = oy + (c_phys[:, 0, 1] - oy) * sc
