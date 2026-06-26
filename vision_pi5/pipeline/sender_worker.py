@@ -1,9 +1,11 @@
 """Sender worker — drive the SCARA to intercept queued objects.
 
-The temporal decision lives in processing.trajectory.evaluate(); this loop just
-executes the verdict: fire CMD2 at X_OPT (with a dead-reckoning vacuum timer),
-pre-position via CMD1, hold/re-queue, or discard. sender_state is published
-under sender_lock for the display thread.
+Each cycle it drains the queue and commits to the SINGLE most-urgent reachable
+target (earliest-deadline = closest to X_OPT); only that object drives the arm,
+so newer upstream objects never preempt the pre-position (no lane jitter). The
+temporal decision lives in processing.trajectory.evaluate(); this loop executes
+the verdict: fire CMD2 at X_OPT (with a dead-reckoning vacuum timer), pre-position
+via CMD1, hold/re-queue, or discard. sender_state is published under sender_lock.
 """
 
 import time
@@ -69,8 +71,12 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 sender_state["paused"] = False
                 sender_state["fault"]  = ""
 
+        # --- Drain the queue, then commit to the SINGLE most-urgent reachable
+        #     target (earliest-deadline = closest to X_OPT). This is the arbiter:
+        #     only ONE object drives the arm, so newer upstream objects can never
+        #     preempt the pre-position -> no lane jitter. ----
         try:
-            entry = result_queue.get(timeout=0.1)
+            candidates = [result_queue.get(timeout=0.1)]
         except queue.Empty:
             now = time.monotonic()
             if now - last_nonempty >= STARVED_ALARM_S:
@@ -84,38 +90,51 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
         last_nonempty = time.monotonic()
         with sender_lock:
             sender_state["starved"] = False
+        while True:
+            try:
+                candidates.append(result_queue.get_nowait())
+            except queue.Empty:
+                break
 
-        now        = time.monotonic()
-        elapsed    = now - entry["captured_at"]    # wall-clock: queue-staleness watchdog only
+        now    = time.monotonic()
+        c_now  = uart_comm.get_absolute_pulse_count()           # Phase A: absolute pulses
+        v_belt = uart_comm.get_pulse_frequency_hz() * R_ENC     # Phase B: live belt velocity
+
+        # Project every candidate; drop the stale (watchdog) and the already-passed.
+        reachable = []
+        for e in candidates:
+            if (now - e["captured_at"]) > TRACK_TIMEOUT_S:
+                print(f"[SENDER] Bo qua — vat ton trong queue qua lau (>{TRACK_TIMEOUT_S}s)")
+                continue
+            x_cur = e["x"] + (c_now - e["pulse_snap"]) * R_ENC   # Phase A spatial update
+            if x_cur > X_OPT:
+                print(f"[SENDER] Bo qua — vat da qua X_OPT (x={x_cur:.1f} > {X_OPT:.1f})")
+                continue
+            reachable.append((x_cur, e))
+
+        if not reachable:
+            continue
+
+        # Belt stopped / invalid rate -> cannot rank by arrival. Hold them all.
+        if v_belt <= 0.0:
+            for _, e in reachable:
+                requeue(e)
+            time.sleep(0.03)
+            continue
+
+        # Earliest-deadline arbitration: largest x_current is closest to X_OPT, i.e.
+        # soonest to arrive -> the committed target. Every other object waits its turn.
+        reachable.sort(key=lambda pair: pair[0], reverse=True)
+        x_current, entry = reachable[0]
+        for _, e in reachable[1:]:
+            requeue(e)
+
         v_snapshot = entry["belt_speed"]
         y_val      = entry["y"]
         shape      = entry["shape"]
         shape_code = entry["shape_code"]
         x_snapshot = entry["x"]
-
-        # ---- Phase A: spatial update from the ABSOLUTE encoder pulse count.
-        # No wall-clock integration -> immune to scheduling jitter / GC drift. ----
-        c_now     = uart_comm.get_absolute_pulse_count()
-        x_current = x_snapshot + (c_now - entry["pulse_snap"]) * R_ENC
-
-        # ---- Phase B: instantaneous belt velocity from the live pulse rate. ----
-        v_belt = uart_comm.get_pulse_frequency_hz() * R_ENC
-
-        # Watchdog: object stuck in the queue too long (safety net, not tracking).
-        if elapsed > TRACK_TIMEOUT_S:
-            print(f"[SENDER] Bo qua — vat ton trong queue qua lau ({elapsed:.1f}s > {TRACK_TIMEOUT_S}s)")
-            continue
-
-        # Object already passed the fixed pick point X_OPT -> unreachable. Discard.
-        if x_current > X_OPT:
-            print(f"[SENDER] Bo qua — vat da qua X_OPT (x={x_current:.1f} > {X_OPT:.1f})")
-            continue
-
-        # Belt stopped / invalid rate -> cannot project arrival. Hold & re-evaluate.
-        if v_belt <= 0.0:
-            requeue(entry)
-            time.sleep(0.03)
-            continue
+        elapsed    = now - entry["captured_at"]
 
         # ---- Phase C: interception decision (pure), meeting at the static X_OPT. ----
         dec = traj.evaluate(

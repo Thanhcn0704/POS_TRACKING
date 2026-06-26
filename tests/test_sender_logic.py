@@ -242,6 +242,28 @@ def test_safe_state_pause_blocks_dispatch():
     assert relay_log == [False], "vacuum fail-safe OFF should fire once on pause entry"
 
 
+def test_arbiter_prepositions_only_most_urgent_lane():
+    # Two far (WAIT-zone) objects in different Y lanes. The OLD FIFO loop sent
+    # CMD1 for EACH -> the arm jittered between lanes. The arbiter must pre-position
+    # ONLY the most-urgent (closest to X_OPT) and never touch the other lane.
+    _install_fakes(t_rob=0.1, belt_speed=100.0)        # slow belt -> far -> WAIT
+    stop = threading.Event()
+    link = FakeLink(stop_event=None)                   # don't auto-stop; observe many cycles
+    rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
+    rq.put(_entry(x=-1000.0, v=100.0, y=-250.0, code=1, pulse_snap=0))   # A: closer  -> urgent
+    rq.put(_entry(x=-5000.0, v=100.0, y=-200.0, code=2, pulse_snap=0))   # B: farther -> waits
+    t = threading.Thread(target=sw.thread_sender,
+                         args=(rq, _state(), stop, 28.0, link), daemon=True)
+    t.start()
+    time.sleep(0.3)
+    stop.set(); t.join(timeout=1.0)
+
+    assert link.boundary_calls, "the most-urgent object should be pre-positioned"
+    assert all(bc[1] == -250.0 for bc in link.boundary_calls), \
+        f"only the most-urgent lane (Y=-250) may be pre-positioned, got {link.boundary_calls}"
+    assert not link.pick_calls, "neither object is in the pick window yet"
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
