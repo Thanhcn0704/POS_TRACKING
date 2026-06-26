@@ -133,6 +133,8 @@ def main():
         "queue_size":   0,
         "t_robot_ms":   0,
         "belt_speed":   0.0,
+        "paused":       False,
+        "fault":        "",
     }
 
     print("\nPOINT DATA               UNIT: mm")

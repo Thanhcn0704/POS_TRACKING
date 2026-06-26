@@ -85,6 +85,7 @@ def _install_fakes(t_rob, belt_speed, pulse_count=0):
         get_belt_speed=lambda: belt_box[0],
         get_absolute_pulse_count=lambda: pulse_box[0],
         get_pulse_frequency_hz=lambda: freq_box[0],
+        get_safe_state=lambda: (True, ""),
         send_relay=fake_send_relay,
     )
     sw.get_predictor = lambda: FakePredictor(t_rob)
@@ -196,6 +197,28 @@ def test_pulse_advance_makes_far_snapshot_pickable():
     assert link.pick_calls, "encoder pulse advance should have made the object pickable"
     assert link.pick_calls[0][0] == config.X_OPT
     assert not link.boundary_calls
+
+
+def test_safe_state_pause_blocks_dispatch():
+    # Safe-state reports a fault -> sender must NOT dispatch, must fail-safe the
+    # vacuum OFF, and the thread must survive the sustained pause.
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0)
+    sw.uart_comm.get_safe_state = lambda: (False, "encoder_stall")
+    stop = threading.Event()
+    link = FakeLink(stop_event=None)
+    rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
+    rq.put(_entry(x=-100.0, v=2000.0))
+    t = threading.Thread(target=sw.thread_sender,
+                         args=(rq, _state(), stop, 28.0, link), daemon=True)
+    t.start()
+    time.sleep(0.3)
+    alive = t.is_alive()
+    stop.set(); t.join(timeout=1.0)
+
+    assert alive, "sender died during a sustained safe-state pause"
+    assert not link.pick_calls and not link.boundary_calls, "must not dispatch while paused"
+    assert True not in relay_log, "vacuum must never energize while paused"
+    assert relay_log == [False], "vacuum fail-safe OFF should fire once on pause entry"
 
 
 def _run_standalone():

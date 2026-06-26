@@ -24,6 +24,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
     point_counter = 1
     cmd_seq       = 0          # monotonic command id echoed back in each ACK
     predictor     = get_predictor()
+    paused        = False      # safe-state pause latch (UART loss / encoder fault)
     if sender_lock is None:
         sender_lock = threading.Lock()
 
@@ -46,6 +47,26 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             print("[SENDER] Queue day — khong re-queue duoc, bo qua vat.")
 
     while not stop_event.is_set():
+        # --- SAFE-STATE gate: pause dispatching on UART loss / encoder fault,
+        #     fail-safe the vacuum, and auto-resume when the link/encoder recover.
+        safe, reason = uart_comm.get_safe_state()
+        if not safe:
+            if not paused:
+                paused = True
+                uart_comm.send_relay(suction=False)
+                print(f"[SAFE-STATE] PAUSE — {reason}. Dung dispatch, cho phuc hoi...")
+                with sender_lock:
+                    sender_state["paused"] = True
+                    sender_state["fault"]  = reason
+            time.sleep(0.1)
+            continue
+        if paused:
+            paused = False
+            print("[SAFE-STATE] RESUME — link/encoder OK, tiep tuc dispatch.")
+            with sender_lock:
+                sender_state["paused"] = False
+                sender_state["fault"]  = ""
+
         try:
             entry = result_queue.get(timeout=0.1)
         except queue.Empty:

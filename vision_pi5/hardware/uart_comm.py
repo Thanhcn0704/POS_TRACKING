@@ -19,6 +19,7 @@ import time
 from vision_pi5.comms import uart_protocol as proto
 from vision_pi5 import config as _cfg
 from vision_pi5.processing.kalman import KalmanFilter1D
+from vision_pi5.processing.safe_state import EncoderHealth
 
 # Hardware constants live in vision_pi5/config.py (single source of truth);
 # these are thin local aliases so existing references and tooling keep working.
@@ -28,13 +29,17 @@ MM_PER_TICK = _cfg.R_ENC                 # mm/pulse — recalibrate: tools/calib
 EMA_ALPHA   = _cfg.BELT_SPEED_EMA_ALPHA  # legacy; KF (below) now smooths speed/freq
 KALMAN_Q    = _cfg.KALMAN_Q
 KALMAN_R    = _cfg.KALMAN_R
+ENCODER_STALL_TIMEOUT_S = _cfg.ENCODER_STALL_TIMEOUT_S
+MAX_TICKS_PER_FRAME     = _cfg.MAX_TICKS_PER_FRAME
 
 _data_lock  = threading.Lock()
 _relay_lock = threading.Lock()
 
 current_belt_speed     = 0.0
 current_total_ticks    = 0        # absolute encoder pulse count (int32 from STM32)
-current_pulse_freq_hz  = 0.0      # Pi-derived pulse rate (pulses/sec, EMA-smoothed)
+current_pulse_freq_hz  = 0.0      # Pi-derived pulse rate (pulses/sec, Kalman-smoothed)
+encoder_ok             = True     # safe-state: False on encoder stall / implausible jump
+_encoder_reason        = ""       # "" | "encoder_stall" | "pulse_jump"
 _ser: serial.Serial    = None
 
 # Protocol constants (aliased from uart_protocol for local use / tests)
@@ -118,6 +123,23 @@ def get_motor_snapshot() -> tuple:
         return current_total_ticks, current_pulse_freq_hz
 
 
+def get_safe_state() -> tuple:
+    """Aggregate health for the sender's pause-and-alarm gate.
+
+    Returns (ok, reason); reason is "" when ok, else the first failing cause:
+      "uart_link_loss" (heartbeat), "encoder_stall", or "pulse_jump".
+    The sender pauses dispatching while not ok and auto-resumes when it clears.
+    """
+    with _status_lock:
+        link = uart_link_ok
+    if not link:
+        return False, "uart_link_loss"
+    with _data_lock:
+        if not encoder_ok:
+            return False, _encoder_reason or "encoder_fault"
+    return True, ""
+
+
 def send_relay(suction: bool, cylinder_override: bool = False) -> bool:
     global _ser
     if _ser is None or not _ser.is_open:
@@ -156,12 +178,13 @@ def get_uart_status() -> bool:
 
 
 class _RxState:
-    """Per-thread decode state for the telemetry EMA filter."""
-    __slots__ = ("kf_freq", "has_prev_sample", "prev_ticks",
+    """Per-thread decode state: Kalman speed filter + encoder health monitor."""
+    __slots__ = ("kf_freq", "health", "has_prev_sample", "prev_ticks",
                  "prev_time", "consecutive_errors")
 
     def __init__(self):
         self.kf_freq            = KalmanFilter1D(KALMAN_Q, KALMAN_R)
+        self.health             = EncoderHealth(ENCODER_STALL_TIMEOUT_S, MAX_TICKS_PER_FRAME)
         self.has_prev_sample    = False
         self.prev_ticks         = 0
         self.prev_time          = 0.0
@@ -171,6 +194,7 @@ class _RxState:
 def _decode_telemetry(frame, st):
     """Decode an 11-byte telemetry frame (caller guarantees the 0xAA/0xBB header)."""
     global current_belt_speed, current_total_ticks, current_pulse_freq_hz
+    global encoder_ok, _encoder_reason
     payload = frame[2:10]
     ck_byte = frame[10]
 
@@ -184,14 +208,17 @@ def _decode_telemetry(frame, st):
     ticks_abs = abs(ticks_val)
     now       = time.monotonic()
 
+    # Encoder health for the safe-state monitor (stall / implausible jump).
+    enc_ok, enc_reason = st.health.update(ticks_val, now)
+
     if st.has_prev_sample:
         dt = now - st.prev_time
-        if dt > 0.0:
+        if dt > 0.0 and enc_reason != "pulse_jump":
             d_ticks   = abs(ticks_abs - st.prev_ticks)
             inst_freq = d_ticks / dt                        # pulses / second (raw, jittery)
             filt_freq = st.kf_freq.update(inst_freq)        # 1-D Kalman de-jitter
         else:
-            filt_freq = st.kf_freq.value
+            filt_freq = st.kf_freq.value                    # skip corrupt-jump sample
     else:
         st.has_prev_sample = True
         filt_freq          = st.kf_freq.value               # 0.0 until the first delta
@@ -203,6 +230,8 @@ def _decode_telemetry(frame, st):
         current_pulse_freq_hz = filt_freq
         current_belt_speed    = filt_freq * MM_PER_TICK     # consistent: speed = freq * mm/pulse
         current_total_ticks   = ticks_val
+        encoder_ok            = enc_ok
+        _encoder_reason       = enc_reason
 
     st.consecutive_errors = 0
 
@@ -277,7 +306,8 @@ def _process_rx_buffer(buffer, st):
 
 
 def thread_uart_receiver(stop_event: threading.Event):
-    global current_belt_speed, current_pulse_freq_hz, _ser, _last_ack_time, uart_link_ok, _fault_logged
+    global current_belt_speed, current_pulse_freq_hz, encoder_ok, _encoder_reason
+    global _ser, _last_ack_time, uart_link_ok, _fault_logged
 
     _open_serial()
 
@@ -323,8 +353,11 @@ def thread_uart_receiver(stop_event: threading.Event):
             with _data_lock:
                 current_belt_speed    = 0.0
                 current_pulse_freq_hz = 0.0
+                encoder_ok            = False
+                _encoder_reason       = "uart_link_loss"
             st.has_prev_sample = False
             st.kf_freq.reset()
+            st.health.reset()
             with _status_lock:
                 uart_link_ok   = False
                 _last_ack_time = time.monotonic()   # reset grace on reconnect

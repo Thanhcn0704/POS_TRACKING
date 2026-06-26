@@ -32,7 +32,7 @@ MODEL_FILE        = os.path.join(MODELS_DIR, "robot_time_model.pkl")
 #       python3 -m tools.calibrate_encoder
 # The value below is the existing pre-refactor constant (provenance UNVERIFIED),
 # kept TEMPORARILY. Recalibrate and overwrite this one line before production.
-R_ENC = 0.0027555            # mm / pulse   <-- recalibrate, do not trust blindly
+R_ENC = 0.0027588            # mm / pulse   <-- recalibrate, do not trust blindly
 
 # --- STM32 UART link -------------------------------------------------------- #
 # Telemetry frame (STM32 -> Pi, every 100 ms, 11 bytes):
@@ -55,6 +55,15 @@ BELT_SPEED_EMA_ALPHA      = 0.25   # legacy EMA; the Kalman filter below now smo
 # effective gain ~0.10 (smoother than the old 0.25 EMA).
 KALMAN_Q = 50.0       # process-noise variance, (pulses/s)^2 per step
 KALMAN_R = 5000.0     # measurement-noise variance, (pulses/s)^2
+
+# --- Safe-state / E-Stop monitor (pause-and-alarm with auto-recovery) -------- #
+# The sender pauses dispatching (and fail-safes the vacuum) while any of these
+# trip, then auto-resumes when the link/encoder recover:
+#   (a) UART silence  -> handled by the heartbeat (HEARTBEAT_TIMEOUT_S above)
+#   (b) encoder stall -> total_ticks frozen longer than ENCODER_STALL_TIMEOUT_S
+#   (c) pulse jump    -> |d_ticks| above MAX_TICKS_PER_FRAME (corrupt / int32 wrap)
+ENCODER_STALL_TIMEOUT_S = 1.0        # s of frozen total_ticks -> stall fault
+MAX_TICKS_PER_FRAME     = 100000     # |delta| above this -> implausible jump (tune to belt)
 
 # --- SCARA kinematic limits (geometric travel-time fallback only) ----------- #
 # UNVERIFIED mechanical boundaries — confirm against the THL400 / TSL3000 spec
