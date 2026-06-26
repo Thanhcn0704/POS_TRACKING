@@ -151,9 +151,11 @@ MORPH_KERNEL_SIZE    = 7
 # --------------------------------------------------------------------------- #
 #  Camera
 # --------------------------------------------------------------------------- #
-CAM_W                = 1280
-CAM_H                = 720
-CAM_FPS              = 60
+CAM_W                = 1280     # required sensor width  (easily adjustable)
+CAM_H                = 720      # required sensor height
+CAM_FPS              = 60       # required framerate
+CAM_FPS_TOLERANCE    = 2.0      # |actual-target| FPS allowed (covers 59.94 etc.);
+                                # a driver reporting 0 FPS counts as a mismatch (fault)
 
 # --------------------------------------------------------------------------- #
 #  Robot Z heights + place stops (mm)
