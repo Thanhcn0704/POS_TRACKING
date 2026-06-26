@@ -13,6 +13,7 @@ import threading
 from vision_pi5.config import (
     C_FIXED, TRACK_TIMEOUT_S, X_OPT, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
     Z_LIFT, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
+    R_ENC,
 )
 from vision_pi5.processing import trajectory as traj
 from vision_pi5.processing.predictor import get_predictor
@@ -33,6 +34,10 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
     print(f"[SENDER] Bat dau. Model ML: {'CO' if predictor.is_model_loaded() else 'KHONG — dung fallback geometric'}")
     print(f"[SENDER] Vi tri robot khoi dong (gia dinh): X={last_robot_x:.3f} Y={last_robot_y:.3f} Z={last_robot_z:.3f}")
 
+    # One-time link init: flush boot-time garbage before the first REQ.
+    if hasattr(link, "initialize"):
+        link.initialize()
+
     def requeue(e):
         """Put an object back for re-evaluation on the next loop iteration."""
         try:
@@ -47,34 +52,40 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             continue
 
         now        = time.monotonic()
-        elapsed    = now - entry["captured_at"]
+        elapsed    = now - entry["captured_at"]    # wall-clock: queue-staleness watchdog only
         v_snapshot = entry["belt_speed"]
-        v_current  = uart_comm.get_belt_speed()
         y_val      = entry["y"]
         shape      = entry["shape"]
         shape_code = entry["shape_code"]
         x_snapshot = entry["x"]
 
-        # Discard objects tracked too long (snapshot is stale).
+        # ---- Phase A: spatial update from the ABSOLUTE encoder pulse count.
+        # No wall-clock integration -> immune to scheduling jitter / GC drift. ----
+        c_now     = uart_comm.get_absolute_pulse_count()
+        x_current = x_snapshot + (c_now - entry["pulse_snap"]) * R_ENC
+
+        # ---- Phase B: instantaneous belt velocity from the live pulse rate. ----
+        v_belt = uart_comm.get_pulse_frequency_hz() * R_ENC
+
+        # Watchdog: object stuck in the queue too long (safety net, not tracking).
         if elapsed > TRACK_TIMEOUT_S:
-            print(f"[SENDER] Bo qua — vat da di qua lau ({elapsed:.1f}s > {TRACK_TIMEOUT_S}s)")
+            print(f"[SENDER] Bo qua — vat ton trong queue qua lau ({elapsed:.1f}s > {TRACK_TIMEOUT_S}s)")
             continue
 
-        # Object already passed the optimal point -> unreachable. Discard.
-        x_current = x_snapshot + v_snapshot * elapsed
+        # Object already passed the fixed pick point X_OPT -> unreachable. Discard.
         if x_current > X_OPT:
             print(f"[SENDER] Bo qua — vat da qua X_OPT (x={x_current:.1f} > {X_OPT:.1f})")
             continue
 
-        # Belt stopped / invalid speed -> cannot project arrival. Hold & re-evaluate.
-        if v_current <= 0.0:
+        # Belt stopped / invalid rate -> cannot project arrival. Hold & re-evaluate.
+        if v_belt <= 0.0:
             requeue(entry)
             time.sleep(0.03)
             continue
 
-        # ---- Decision (pure) ----
+        # ---- Phase C: interception decision (pure), meeting at the static X_OPT. ----
         dec = traj.evaluate(
-            entry, elapsed, v_current,
+            entry, x_current, v_belt,
             (last_robot_x, last_robot_y, last_robot_z), predictor, z_val)
 
         if dec.action == traj.REJECT:
@@ -100,7 +111,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             print(f"  Snapshot X     : {x_snapshot:.3f}  v_snap={v_snapshot:.1f}mm/s")
             print(f"  Delay elapsed  : {elapsed*1000:.0f}ms   X hien tai={x_current:.3f}")
             print(f"  Robot xuat phat: X={last_robot_x:.3f} Y={last_robot_y:.3f} Z={last_robot_z:.3f}")
-            print(f"  t_obj -> X_OPT : {t_obj*1000:.0f}ms  (v_now={v_current:.1f}mm/s)")
+            print(f"  t_obj -> X_OPT : {t_obj*1000:.0f}ms  (v_belt={v_belt:.1f}mm/s, encoder)")
             print(f"  t_rob (ML)     : {t_rob*1000:.0f}ms  (+lat {LATENCY_OFFSET*1000:.0f}ms)")
             print(f"  PICK @ STATIC  : X={X_OPT:.3f}  Y={y_val:.3f}  Z=28.000  C={C_FIXED:.3f}")
             print(f"  Vacuum lead    : energize in {relay_delay*1000:.0f}ms")
@@ -116,7 +127,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 sender_state["last_shape_code"] = shape_code
                 sender_state["queue_size"]      = result_queue.qsize()
                 sender_state["t_robot_ms"]      = int(t_rob * 1000)
-                sender_state["belt_speed"]      = v_current
+                sender_state["belt_speed"]      = v_belt
 
             cmd_seq += 1
             # on_commit fires the moment the robot is GO'd to move -> accurate

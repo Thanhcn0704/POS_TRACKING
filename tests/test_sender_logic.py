@@ -1,13 +1,14 @@
-"""Task 4-7 verification — Static Coordinate / Dynamic Temporal Trigger sender.
+"""Encoder pulse-tracking sender — Static Coordinate / pulse-retimed trigger.
 
 Drives pipeline.sender_worker.thread_sender with fakes for the predictor,
-uart_comm, and RobotLink (no camera, robot, or serial). Verifies the four
-decision branches:
+uart_comm, and RobotLink (no camera, robot, or serial). Verifies:
 
   * PERFECT WINDOW  -> CMD2 at the static X_OPT, vacuum fired by async timer
   * TOO FAR         -> CMD1 to exactly ROBOT_X_MIN (never beyond)
   * ALREADY PASSED  -> discarded (x_current > X_OPT)
   * BELT STOPPED    -> no division-by-zero; object held, thread survives
+  * PULSE ADVANCE   -> a far snapshot becomes pickable once the absolute pulse
+                       count advances it to the window (Phase A spatial update)
 
 Run:
     py -V:ContinuumAnalytics/Anaconda39-64 tests/test_sender_logic.py
@@ -64,10 +65,17 @@ class FakeLink:
         return True
 
 
-def _install_fakes(t_rob, belt_speed):
-    """Patch sender_worker module globals; return (relay_log, belt_box)."""
+def _install_fakes(t_rob, belt_speed, pulse_count=0):
+    """Patch sender_worker module globals.
+
+    Returns (relay_log, belt_box, pulse_box). belt_speed (mm/s) is exposed to the
+    sender as a pulse rate: pulse_frequency_hz = belt_speed / R_ENC, so
+    v_belt = freq * R_ENC == belt_speed.
+    """
     relay_log = []
     belt_box  = [belt_speed]
+    pulse_box = [pulse_count]
+    freq_box  = [belt_speed / config.R_ENC if config.R_ENC else 0.0]
 
     def fake_send_relay(suction, cylinder_override=False):
         relay_log.append(suction)
@@ -75,19 +83,22 @@ def _install_fakes(t_rob, belt_speed):
 
     sw.uart_comm = SimpleNamespace(
         get_belt_speed=lambda: belt_box[0],
+        get_absolute_pulse_count=lambda: pulse_box[0],
+        get_pulse_frequency_hz=lambda: freq_box[0],
         send_relay=fake_send_relay,
     )
     sw.get_predictor = lambda: FakePredictor(t_rob)
-    return relay_log, belt_box
+    return relay_log, belt_box, pulse_box
 
 
-def _entry(x, v, y=-250.0, shape="circle", code=1, cmd1=False):
+def _entry(x, v, y=-250.0, shape="circle", code=1, cmd1=False, pulse_snap=0):
     return {
         "x":           x,
         "y":           y,
         "shape":       shape,
         "shape_code":  code,
         "captured_at": time.monotonic(),
+        "pulse_snap":  pulse_snap,
         "belt_speed":  v,
         "cmd1_sent":   cmd1,
     }
@@ -111,27 +122,26 @@ def _run(link, rq, stop, timeout=3.0):
 #  Tests
 # --------------------------------------------------------------------------- #
 def test_perfect_window_picks_at_static_x_opt():
-    # x_current stays well negative; t_obj ~= 0.05 <= t_rob(0.1)+LATENCY(0.05).
-    relay_log, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0)
+    # x_current = -100 (pulse delta 0); t_obj ~= 0.05 <= t_rob(0.1)+LATENCY(0.05).
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0, pulse_count=0)
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)  # let the vacuum timer fire
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-100.0, v=2000.0))
+    rq.put(_entry(x=-100.0, v=2000.0, pulse_snap=0))
     _run(link, rq, stop)
 
     assert link.pick_calls, "expected a CMD2 pick"
     assert link.pick_calls[0][0] == config.X_OPT, f"pick X must be X_OPT, got {link.pick_calls[0][0]}"
     assert not link.boundary_calls, "should not pre-position when already in window"
-    # Dead-reckoning vacuum: ON (timer, during the blocking move) then OFF.
     assert relay_log == [True, False], f"vacuum sequence wrong: {relay_log}"
 
 
 def test_too_far_commands_exactly_boundary():
-    relay_log, _ = _install_fakes(t_rob=0.1, belt_speed=100.0)
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=100.0, pulse_count=0)
     stop = threading.Event()
     link = FakeLink(stop_event=stop)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-5000.0, v=100.0))   # t_obj ~= 50s -> far -> CMD1
+    rq.put(_entry(x=-5000.0, v=100.0, pulse_snap=0))   # t_obj ~= 50s -> far -> CMD1
     _run(link, rq, stop)
 
     assert link.boundary_calls, "expected a CMD1 boundary pre-position"
@@ -142,11 +152,11 @@ def test_too_far_commands_exactly_boundary():
 
 
 def test_passed_object_is_discarded():
-    relay_log, _ = _install_fakes(t_rob=0.1, belt_speed=100.0)
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=100.0, pulse_count=0)
     stop = threading.Event()
     link = FakeLink(stop_event=None)     # don't auto-stop; nothing should be called
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=50.0, v=100.0))      # x_current > X_OPT -> discard
+    rq.put(_entry(x=50.0, v=100.0, pulse_snap=0))      # x_current > X_OPT -> discard
     t = _run(link, rq, stop, timeout=0.3)
     stop.set(); t.join(timeout=1.0)
 
@@ -155,11 +165,11 @@ def test_passed_object_is_discarded():
 
 
 def test_belt_stopped_no_zero_division():
-    relay_log, _ = _install_fakes(t_rob=0.1, belt_speed=0.0)   # v_current == 0
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=0.0, pulse_count=0)  # freq 0 -> v_belt 0
     stop = threading.Event()
     link = FakeLink(stop_event=None)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=-100.0, v=0.0))
+    rq.put(_entry(x=-100.0, v=0.0, pulse_snap=0))
     t = threading.Thread(target=sw.thread_sender,
                          args=(rq, _state(), stop, 28.0, link), daemon=True)
     t.start()
@@ -170,6 +180,22 @@ def test_belt_stopped_no_zero_division():
     assert alive, "thread_sender died on a stopped belt (division by zero?)"
     assert not link.pick_calls and not link.boundary_calls
     assert relay_log == []
+
+
+def test_pulse_advance_makes_far_snapshot_pickable():
+    # Snapshot was far upstream (x=-200), but the absolute pulse count has since
+    # advanced ~100 mm (Phase A), bringing x_current ~= -100 into the window.
+    advance_pulses = int(round(100.0 / config.R_ENC))      # ~36291 pulses == 100 mm
+    relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0, pulse_count=advance_pulses)
+    stop = threading.Event()
+    link = FakeLink(stop_event=stop, pick_block_s=0.2)
+    rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
+    rq.put(_entry(x=-200.0, v=2000.0, pulse_snap=0))        # snapshot, before the advance
+    _run(link, rq, stop)
+
+    assert link.pick_calls, "encoder pulse advance should have made the object pickable"
+    assert link.pick_calls[0][0] == config.X_OPT
+    assert not link.boundary_calls
 
 
 def _run_standalone():

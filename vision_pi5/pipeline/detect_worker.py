@@ -103,6 +103,7 @@ def thread_detect(frame_queue, result_queue, display_queue,
                         "shape":       locked_shape,
                         "shape_code":  locked_shape_code,
                         "captured_at": time.monotonic(),
+                        "pulse_snap":  uart_comm.get_absolute_pulse_count(),
                         "belt_speed":  belt_speed,
                         "cmd1_sent":   False,
                     }
