@@ -130,7 +130,7 @@ def test_perfect_window_picks_at_static_x_opt():
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)  # let the vacuum timer fire
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=XO - 100.0, v=2000.0, pulse_snap=0))
+    rq.put(_entry(x=XO - 240.0, v=2000.0, pulse_snap=0))   # t_obj=0.12 -> feasible(t_rob 0.1) PICK
     _run(link, rq, stop)
 
     assert link.pick_calls, "expected a CMD2 pick"
@@ -193,7 +193,7 @@ def test_pulse_advance_makes_far_snapshot_pickable():
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=XO - 200.0, v=2000.0, pulse_snap=0))    # snapshot, before the advance
+    rq.put(_entry(x=XO - 340.0, v=2000.0, pulse_snap=0))    # snapshot; +100mm advance -> XO-240 (PICK)
     _run(link, rq, stop)
 
     assert link.pick_calls, "encoder pulse advance should have made the object pickable"

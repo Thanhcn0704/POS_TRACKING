@@ -144,6 +144,8 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
         if dec.action == traj.REJECT:
             print(f"[SENDER] TU CHOI — Y={y_val:.3f} ngoai vung [{ROBOT_Y_MIN}, {ROBOT_Y_MAX}]")
             continue
+        if dec.action == traj.DISCARD:
+            continue   # passed X_OPT (normally pre-filtered in the drain) — drop
 
         t_obj, t_rob, x_current = dec.t_obj, dec.t_rob, dec.x_current
 
@@ -209,8 +211,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
 
             point_counter += 1
 
-        elif dec.action == traj.WAIT:
-            # ===== TOO FAR -> pre-position robot at the safe boundary, then wait =====
+        else:
+            # ===== WAIT -> pre-position at the safe boundary ONCE, then re-queue
+            #       and re-evaluate until the object enters the feasible window. =====
             if not entry["cmd1_sent"]:
                 print(f"\n[SENDER] Vat con xa (t_obj={t_obj*1000:.0f}ms) — gui CMD=1 "
                       f"don tai bien X_MIN={ROBOT_X_MIN:.1f}")
@@ -234,11 +237,6 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                     print("[WARN] CMD=1 (don dau) loi — bo qua vat nay.\n")
                     continue                            # drop this object
 
-            requeue(entry)
-            time.sleep(0.02)
-
-        else:
-            # ===== HOLD ZONE: robot ready, object almost in window. Wait briefly. =====
             requeue(entry)
             time.sleep(0.02)
 

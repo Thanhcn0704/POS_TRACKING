@@ -2,9 +2,11 @@
 
 No threads/sockets — just the decision function with a stub predictor. The
 encoder-based x_current (Phase A) and v_belt (Phase B) are computed by the
-caller (sender_worker) and passed in, so here they are supplied directly.
-x_current is expressed RELATIVE to config.X_OPT so the tests are independent of
-where the rendezvous sits.
+caller (sender_worker) and passed in. x_current is expressed RELATIVE to
+config.X_OPT so the tests are independent of where the rendezvous sits.
+
+PICK now requires BOTH feasibility (t_rob <= t_obj) and the lead window
+(t_obj <= t_rob + LATENCY_OFFSET). _Pred(t) stubs t_rob to a fixed value.
 
 Run:
     py -V:ContinuumAnalytics/Anaconda39-64 tests/test_trajectory.py
@@ -36,45 +38,47 @@ def _entry(y=-250.0):
 
 
 def test_pick():
-    # 100 mm before X_OPT, v=2000 -> t_obj=0.05 <= t_rob(0.1)+LAT(0.05)
-    d = traj.evaluate(_entry(), XO - 100.0, 2000.0, _LAST, _Pred(0.1), 28.0)
+    # t_obj = 120/1000 = 0.12; t_rob = 0.1 -> feasible (0.1<=0.12) and within the
+    # lead window (0.12 <= 0.1+0.05) -> PICK.
+    d = traj.evaluate(_entry(), XO - 120.0, 1000.0, _LAST, _Pred(0.1), 28.0)
     assert d.action == traj.PICK, d
 
 
-def test_wait():
-    # t_obj = 5000/100 = 50 s -> far -> WAIT
-    d = traj.evaluate(_entry(), XO - 5000.0, 100.0, _LAST, _Pred(0.1), 28.0)
+def test_wait_too_far():
+    # t_obj = 500/1000 = 0.5 -> beyond the lead window -> WAIT.
+    d = traj.evaluate(_entry(), XO - 500.0, 1000.0, _LAST, _Pred(0.1), 28.0)
     assert d.action == traj.WAIT, d
 
 
-def test_hold():
-    # t_obj = 25/100 = 0.25 -> inside (t_rob+LAT, t_rob+LAT+0.2] = (0.15, 0.35]
-    d = traj.evaluate(_entry(), XO - 25.0, 100.0, _LAST, _Pred(0.1), 28.0)
-    assert d.action == traj.HOLD, d
+def test_wait_infeasible_robot_too_slow():
+    # t_obj = 100/1000 = 0.1 but t_rob = 0.3 > t_obj -> arm cannot arrive in time,
+    # so NOT a pick (feasibility gate) -> WAIT (keep pre-positioning / waiting).
+    d = traj.evaluate(_entry(), XO - 100.0, 1000.0, _LAST, _Pred(0.3), 28.0)
+    assert d.action == traj.WAIT, d
 
 
 def test_discard_passed():
-    # 50 mm PAST X_OPT -> already passed the fixed pick point
+    # 50 mm PAST X_OPT -> already passed the fixed pick point.
     d = traj.evaluate(_entry(), XO + 50.0, 100.0, _LAST, _Pred(0.1), 28.0)
     assert d.action == traj.DISCARD, d
 
 
 def test_reject_y_out_of_range():
-    d = traj.evaluate(_entry(y=0.0), XO - 100.0, 2000.0, _LAST, _Pred(0.1), 28.0)
+    d = traj.evaluate(_entry(y=0.0), XO - 120.0, 1000.0, _LAST, _Pred(0.1), 28.0)
     assert d.action == traj.REJECT, d
 
 
 def test_reject_y_within_boundary_dead_zone():
-    # Y inside the raw envelope but within the 0.1mm dead-zone buffer of the edge.
     edge = config.ROBOT_Y_MAX - 0.05
-    d = traj.evaluate(_entry(y=edge), XO - 100.0, 2000.0, _LAST, _Pred(0.1), 28.0)
+    d = traj.evaluate(_entry(y=edge), XO - 120.0, 1000.0, _LAST, _Pred(0.1), 28.0)
     assert d.action == traj.REJECT, d
 
 
 def test_pick_targets_static_x_opt():
-    d = traj.evaluate(_entry(), XO - 100.0, 2000.0, _LAST, _Pred(0.1), 28.0)
+    d = traj.evaluate(_entry(), XO - 120.0, 1000.0, _LAST, _Pred(0.1), 28.0)
+    assert d.action == traj.PICK
     assert d.t_obj is not None and d.t_rob is not None
-    assert abs(d.x_current - (XO - 100.0)) < 1e-9
+    assert abs(d.x_current - (XO - 120.0)) < 1e-9
 
 
 def _run_standalone():

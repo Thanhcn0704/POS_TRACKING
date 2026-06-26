@@ -10,9 +10,8 @@ belt-stopped (v<=0) and queue-watchdog guards before calling this — here
 v_belt is assumed > 0.
 
 Actions:
-    PICK     object is in the perfect temporal window -> CMD2 at X_OPT now
-    WAIT     object too far -> CMD1 pre-position the robot at ROBOT_X_MIN
-    HOLD     in-between -> re-queue and re-evaluate shortly
+    PICK     feasible (t_rob <= t_obj) AND within the lead window -> CMD2 at X_OPT
+    WAIT     too far, or not catchable from here -> CMD1 pre-position at ROBOT_X_MIN
     DISCARD  object already passed X_OPT -> unreachable
     REJECT   target Y outside the work envelope
 """
@@ -31,9 +30,6 @@ REJECT  = "REJECT"
 
 # t_obj / t_rob are None for DISCARD; t_rob is None for REJECT.
 Decision = namedtuple("Decision", "action t_obj t_rob x_current")
-
-# Slack above the perfect window before we bother pre-positioning at the boundary.
-WAIT_MARGIN_S = 0.2
 
 
 def evaluate(entry, x_current, v_belt, last_robot, predictor, z_val):
@@ -64,8 +60,10 @@ def evaluate(entry, x_current, v_belt, last_robot, predictor, z_val):
         last_robot[0], last_robot[1], last_robot[2],
         X_OPT,         y_val,         z_val)
 
-    if t_obj <= (t_rob + LATENCY_OFFSET):
+    # PICK only when the arm can arrive no later than the object (feasibility gate
+    # t_rob <= t_obj -> it won't descend into empty belt) AND the object is within
+    # the lead window. Otherwise WAIT: pre-position / keep waiting. The old HOLD
+    # margin (WAIT_MARGIN_S) is dropped, so WAIT goes straight to PICK -> less idle.
+    if t_rob <= t_obj <= t_rob + LATENCY_OFFSET:
         return Decision(PICK, t_obj, t_rob, x_current)
-    if t_obj > (t_rob + LATENCY_OFFSET + WAIT_MARGIN_S):
-        return Decision(WAIT, t_obj, t_rob, x_current)
-    return Decision(HOLD, t_obj, t_rob, x_current)
+    return Decision(WAIT, t_obj, t_rob, x_current)
