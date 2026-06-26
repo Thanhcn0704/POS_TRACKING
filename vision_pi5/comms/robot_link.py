@@ -191,7 +191,8 @@ class RobotLink:
             if "NG" in line or "OUT" in line:
                 return "bad"
 
-    def _transact(self, cmd_id, cmd, x, y, z, c, shape_code, done_word, on_commit):
+    def _transact(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
+                  on_commit, on_release=None):
         """One verified exchange. Returns 'done' | 'retry' | 'failed'.
 
         'retry' only for pre-commit failures (no GO sent yet); once GO is sent
@@ -221,22 +222,42 @@ class RobotLink:
             if on_commit is not None:
                 on_commit()
             self.send_line(f"{GATE_GO}\r")
-            if self.wait_for_signal(done_word):
-                print("[ROBOT] Sequence hoan tat!")
-                return "done"
-            return "failed"
+
+            # Wait for completion. Drop the vacuum the INSTANT the robot reports
+            # "REL" (printed at the discharge bottom) so the part releases there,
+            # not after the place retract. CMD1 never prints REL -> no-op for it.
+            deadline = time.monotonic() + 60.0
+            while True:
+                line = self.read_line(deadline)
+                if line is None:
+                    if not self._stopped():
+                        print(f"[LOI] Khong nhan duoc {done_word} trong 60s.")
+                    return "failed"
+                if not line:
+                    continue
+                print(f"[RX] {repr(line)}")
+                if "REL" in line:
+                    if on_release is not None:
+                        on_release()            # vacuum OFF at the discharge point
+                    continue
+                if done_word in line:
+                    print("[ROBOT] Sequence hoan tat!")
+                    return "done"
+                if "NG" in line or "OUT" in line:
+                    print(f"[LOI] Robot bao loi: {line}")
+                    return "failed"
 
         except OSError as e:
             print(f"[LOI] Socket: {e}")
             return "failed"
 
     def send_verified(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
-                      on_commit=None, retries=ACK_RETRIES):
+                      on_commit=None, on_release=None, retries=ACK_RETRIES):
         for attempt in range(retries + 1):
             if attempt > 0:
                 print(f"[SENDER] Retry truyen ({attempt}/{retries}) id={cmd_id}")
             result = self._transact(cmd_id, cmd, x, y, z, c, shape_code,
-                                    done_word, on_commit)
+                                    done_word, on_commit, on_release)
             if result == "done":
                 return True
             if result == "failed":
@@ -252,7 +273,8 @@ class RobotLink:
         print(f"[SEQ] WAIT_BOUNDARY ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
         return self.send_verified(cmd_id, 1, x, y, Z_SAFE, 0.0, 0, "ARRIVED")
 
-    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None):
+    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None,
+                      on_release=None):
         place_info = PLACE_LABEL.get(shape_code, "unknown")
         print(f"[TX] CMD=2 (PICK) id={cmd_id} X={x:.3f} Y={y:.3f} Z={z:.3f} "
               f"C={c:.3f} SHP={shape_code}")
@@ -261,4 +283,4 @@ class RobotLink:
         print(f"[SEQ] LIFT     ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
         print(f"[SEQ] PLACE -> {place_info}")
         return self.send_verified(cmd_id, 2, x, y, z, c, shape_code, "DONE",
-                                  on_commit=on_commit)
+                                  on_commit=on_commit, on_release=on_release)

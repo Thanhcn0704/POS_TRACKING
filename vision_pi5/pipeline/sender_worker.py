@@ -153,11 +153,13 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             cmd_seq += 1
             # on_commit fires the moment the robot is GO'd to move -> accurate
             # vacuum lead, and it never energizes on an aborted/failed transmit.
-            success = link.send_to_robot(cmd_seq, X_OPT, y_val, z_val, C_FIXED,
-                                         shape_code, on_commit=suction_timer.start)
+            success = link.send_to_robot(
+                cmd_seq, X_OPT, y_val, z_val, C_FIXED, shape_code,
+                on_commit=suction_timer.start,
+                on_release=lambda: uart_comm.send_relay(suction=False))  # drop at discharge
 
             suction_timer.cancel()                 # no-op if it already fired
-            uart_comm.send_relay(suction=False)
+            uart_comm.send_relay(suction=False)    # belt-and-suspenders: ensure OFF after DONE
 
             with sender_lock:
                 sender_state["moving"]     = False

@@ -54,7 +54,7 @@ class FakeLink:
             self._stop.set()
         return True
 
-    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None):
+    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None, on_release=None):
         if on_commit:
             on_commit()                  # mimic the real GO-commit (starts vacuum timer)
         if self._pick_block_s:

@@ -27,7 +27,7 @@ class MockRobot(threading.Thread):
     """Reactive mock of the robot_scara SCOL loop (REQ/ACK/GO/DONE)."""
 
     def __init__(self, sock, *, delay_attempts=frozenset(), bad_attempts=frozenset(),
-                 delay_s=0.2, done_word="DONE", max_attempts=6):
+                 delay_s=0.2, done_word="DONE", max_attempts=6, emit_rel=False):
         super().__init__(daemon=True)
         self.sock           = sock
         self.delay_attempts = delay_attempts
@@ -35,6 +35,7 @@ class MockRobot(threading.Thread):
         self.delay_s        = delay_s
         self.done_word      = done_word
         self.max_attempts   = max_attempts
+        self.emit_rel       = emit_rel   # print "REL" before DONE (discharge release)
         self._buf           = b""
         self.received       = []     # parsed (id,cmd,x,y,z,c,shp) per attempt
         self.got_go         = False
@@ -88,6 +89,9 @@ class MockRobot(threading.Thread):
                 self.got_go = True
                 self.moved  = True
                 try:
+                    if self.emit_rel:
+                        self.sock.sendall(b"REL\r")   # release at the discharge bottom
+                        time.sleep(0.01)
                     self.sock.sendall((self.done_word + "\r").encode())
                 except OSError:
                     pass
@@ -159,6 +163,21 @@ def test_boundary_handshake_arrived():
         assert ok is True and robot.moved
         cid, cmd, x, y, z, c, shp = robot.received[0]
         assert cmd == 1 and abs(x - config.ROBOT_X_MIN) < 1e-3
+    finally:
+        server.close(); client.close()
+
+
+def test_release_fires_on_rel_before_done():
+    server, client = _pair()
+    try:
+        robot = MockRobot(server, emit_rel=True); robot.start()
+        link = RobotLink(client)
+        released = []
+        ok = link.send_to_robot(1, config.X_OPT, -250.0, 28.0, config.C_FIXED, 1,
+                                on_release=lambda: released.append(1))
+        robot.join(timeout=2.0)
+        assert ok is True
+        assert released, "on_release must fire when the robot reports REL at the discharge"
     finally:
         server.close(); client.close()
 
