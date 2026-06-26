@@ -23,7 +23,11 @@ import math
 from vision_pi5.config import (
     EMA_ALPHA, STABLE_TIME_S, AREA_SETTLE_FRAC,
     TRACK_ASSOC_MAX_DIST_MM, TRACK_MAX_MISS_S,
+    SHAPE_CODE, SHAPE_CODE_DEFAULT, SHAPE_VOTE_MIN_CONFIDENCE,
 )
+
+# The only pickable classes; every other vote (incl. "unknown") is rejected.
+_TARGET_SHAPES = frozenset(SHAPE_CODE)
 
 
 class Track:
@@ -31,22 +35,23 @@ class Track:
 
     __slots__ = ("id", "ema_x", "ema_y", "created_at", "last_seen",
                  "prev_area", "area_settled", "shape_votes", "shape_codes",
-                 "locked_shape", "locked_code", "enqueued", "det")
+                 "locked_shape", "locked_code", "decided", "reject_logged", "det")
 
     def __init__(self, tid, det, now):
-        self.id           = tid
-        self.ema_x        = det["robot_x"]
-        self.ema_y        = det["robot_y"]
-        self.created_at   = now
-        self.last_seen    = now
-        self.prev_area    = det["area"]
-        self.area_settled = False
-        self.shape_votes  = {det["shape"]: 1}
-        self.shape_codes  = {det["shape"]: det["shape_code"]}
-        self.locked_shape = None
-        self.locked_code  = None
-        self.enqueued     = False
-        self.det          = det        # latest raw detection (for the overlay)
+        self.id            = tid
+        self.ema_x         = det["robot_x"]
+        self.ema_y         = det["robot_y"]
+        self.created_at    = now
+        self.last_seen     = now
+        self.prev_area     = det["area"]
+        self.area_settled  = False
+        self.shape_votes   = {det["shape"]: 1}
+        self.shape_codes   = {det["shape"]: det["shape_code"]}
+        self.locked_shape  = None
+        self.locked_code   = None
+        self.decided       = False     # classification decision made (accept OR reject)
+        self.reject_logged = False     # worker logged the reject once
+        self.det           = det       # latest raw detection (for the overlay)
 
     def update_match(self, det, now):
         """Fold a newly-associated detection into this track."""
@@ -69,10 +74,13 @@ class Track:
         """Belt-projected X for association: the object keeps moving while unseen."""
         return self.ema_x + belt_speed * (now - self.last_seen)
 
-    def majority_shape(self):
-        """Most-voted shape + its code (the per-track shape memory)."""
+    def vote_result(self):
+        """Multi-frame vote: (winning_shape, code, confidence) where confidence is
+        the winner's share of all per-frame votes for this track."""
+        total = sum(self.shape_votes.values())
         shape = max(self.shape_votes, key=self.shape_votes.get)
-        return shape, self.shape_codes[shape]
+        conf  = self.shape_votes[shape] / total if total else 0.0
+        return shape, self.shape_codes.get(shape, SHAPE_CODE_DEFAULT), conf
 
 
 class MultiObjectTracker:
@@ -124,26 +132,32 @@ class MultiObjectTracker:
             self.tracks.append(Track(self._next_id, det, now))
             self._next_id += 1
 
-        # 4) Confirm + enqueue each track exactly once.
+        # 4) Decide each track exactly once: enqueue if the multi-frame vote names a
+        #    target with enough confidence; otherwise STRICTLY REJECT (tracked for
+        #    identity, never picked) so anomalous/ambiguous shapes are not placed.
         new_entries = []
         for tr in self.tracks:
-            if tr.enqueued or not (tr.is_stable(now) and tr.area_settled):
+            if tr.decided or not (tr.is_stable(now) and tr.area_settled):
                 continue
-            shape, code = tr.majority_shape()
-            tr.locked_shape = shape
-            tr.locked_code  = code
-            tr.enqueued     = True
-            new_entries.append({
-                "x":           tr.ema_x,
-                "y":           tr.ema_y,
-                "shape":       shape,
-                "shape_code":  code,
-                "captured_at": now,
-                "pulse_snap":  pulse_count,
-                "belt_speed":  belt_speed,
-                "cmd1_sent":   False,
-                "track_id":    tr.id,
-            })
+            shape, code, conf = tr.vote_result()
+            tr.decided = True
+            if shape in _TARGET_SHAPES and conf >= SHAPE_VOTE_MIN_CONFIDENCE:
+                tr.locked_shape = shape
+                tr.locked_code  = code
+                new_entries.append({
+                    "x":           tr.ema_x,
+                    "y":           tr.ema_y,
+                    "shape":       shape,
+                    "shape_code":  code,
+                    "captured_at": now,
+                    "pulse_snap":  pulse_count,
+                    "belt_speed":  belt_speed,
+                    "cmd1_sent":   False,
+                    "track_id":    tr.id,
+                })
+            else:
+                tr.locked_shape = "unknown"          # rejected: anomalous / low-confidence
+                tr.locked_code  = SHAPE_CODE_DEFAULT
 
         return new_entries, self.tracks
 

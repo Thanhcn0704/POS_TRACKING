@@ -69,6 +69,13 @@ def thread_detect(frame_queue, result_queue, display_queue,
             except queue.Full:
                 pass
 
+        # Strict reject: log each rejected track once (tracked, never picked).
+        for tr in tracks:
+            if tr.decided and tr.locked_shape == "unknown" and not tr.reject_logged:
+                tr.reject_logged = True
+                print(f"[DETECT] REJECT vat #{tr.id}: hinh dang la/khong ro "
+                      f"(X={tr.ema_x:.1f} Y={tr.ema_y:.1f}) — bo qua, khong pick.")
+
         # ---- Display payload: show the single most-urgent track (HUD unchanged). ----
         primary = tracker.primary_track()
         if primary is not None:

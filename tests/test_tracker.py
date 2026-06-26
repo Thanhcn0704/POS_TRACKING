@@ -114,6 +114,26 @@ def test_shape_majority_vote_survives_one_noisy_frame():
     assert entries[0]["shape"] == "circle"   # 3 circle vs 1 triangle
 
 
+def test_unknown_majority_is_rejected_not_enqueued():
+    # Every frame classifies as "unknown" -> decided but NEVER enqueued.
+    trk = MultiObjectTracker()
+    trk.update([_det(0.0, -200.0, "unknown")], 0.0, 0.0, 0)
+    entries, tracks = trk.update([_det(0.0, -200.0, "unknown")], 0.0, AFTER_STABLE, 0)
+    assert entries == []                       # nothing pickable
+    assert len(tracks) == 1                    # still tracked for identity
+    assert tracks[0].decided is True
+    assert tracks[0].locked_shape == "unknown"
+
+
+def test_low_confidence_split_is_rejected():
+    # Ambiguous part: votes split below SHAPE_VOTE_MIN_CONFIDENCE -> reject.
+    trk = MultiObjectTracker()
+    trk.update([_det(0.0, -200.0, "circle")],   0.0, 0.00, 0)
+    trk.update([_det(0.0, -200.0, "square")],   0.0, 0.04, 0)
+    entries, _ = trk.update([_det(0.0, -200.0, "triangle")], 0.0, AFTER_STABLE, 0)
+    assert entries == []                       # 1/3 each -> no winner >= 60%
+
+
 def test_primary_track_is_most_urgent():
     trk = MultiObjectTracker()
     # two objects; the larger X is closest to the pick point -> primary

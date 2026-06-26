@@ -229,6 +229,34 @@ SHAPE_ASPECT_RECT_MAX    = 0.75
 SHAPE_ASPECT_SQUARE_MIN  = 0.85
 SHAPE_VERTEX_TOLERANCE   = 0.04
 
+# --- Strict multi-feature classifier (vision.shape.classify_shape) ---------- #
+# Accept ONLY circle / square / triangle; everything else -> "unknown" -> REJECT
+# (never enqueued). The primary discriminator is the fill ratio
+#   rect_fill = contour_area / minAreaRect_area
+# whose THEORETICAL values are non-overlapping: triangle = 0.50, circle = pi/4 =
+# 0.785, square = 1.0. Bands leave reject GAPS between them; vertex count
+# (multi-epsilon mode) + circularity + aspect corroborate. All bands are pure
+# geometry (no physical/hardware constant) — tune against the live silhouettes.
+SHAPE_VERTEX_EPS_SWEEP    = (0.02, 0.03, 0.04)  # approxPolyDP eps fractions; take the modal count
+SHAPE_SOLIDITY_MIN_ACCEPT = 0.90    # all 3 targets are convex -> reject blobs/concave anomalies
+SHAPE_ASPECT_CIRCLE_MIN   = 0.80    # a circle's min-area-rect is near-square
+SHAPE_FILL_TRI_MIN        = 0.38    # triangle fill band  ~0.50
+SHAPE_FILL_TRI_MAX        = 0.62
+SHAPE_FILL_CIRCLE_MIN     = 0.68    # circle   fill band  ~0.785   (gap 0.62-0.68 -> reject)
+SHAPE_FILL_CIRCLE_MAX     = 0.86
+SHAPE_FILL_SQUARE_MIN     = 0.88    # square   fill band  ~1.0      (gap 0.86-0.88 -> reject)
+# Min-enclosing-circle fill = area / (pi * r_enc^2): the decisive circle gate
+# (true circle ~0.95-1.0; pentagon ~0.76, hexagon ~0.83 -> rejected even though
+# their circularity clears 0.82). Separates a disc from high-order polygons
+# without reference templates.
+SHAPE_CIRCLE_ENCLOSE_MIN  = 0.88
+
+# --- Multi-frame voting (tracking.tracker) ---------------------------------- #
+# A track is enqueued only if its WINNING per-frame shape is a target AND owns at
+# least this fraction of its votes; otherwise the object is REJECTED (tracked for
+# identity, never picked). Backstops a single bad frame and ambiguous parts.
+SHAPE_VOTE_MIN_CONFIDENCE = 0.60
+
 SHAPE_CODE = {
     "circle":   1,
     "square":   2,
