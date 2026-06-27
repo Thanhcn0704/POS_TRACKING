@@ -1,25 +1,37 @@
-"""Interception decision — "Static Coordinate / Dynamic Temporal Trigger".
+"""Interception decision — direct (dynamic) interception solver (Task 4).
 
 Pure function (no threads, no I/O beyond the injected predictor) so it is
-directly unit-testable. The robot and the object "meet" at the fixed optimal
-pick coordinate X_OPT at the same time.
+directly unit-testable. Instead of pinning the meeting to a single static X_OPT,
+it solves the per-object intercept where the robot and the object naturally
+coincide:
 
-evaluate() returns a Decision. The caller (pipeline.sender_worker) computes the
+    X_int = x_current + v_belt * t_rob(robot_last -> X_int)
+
+a fixed point solved by iteration (a contraction while v_belt << SCARA top
+speed). At a converged in-envelope X_int the object-arrival time equals the
+robot-arrival time by construction (t_obj == t_rob), so it is feasible by
+definition and the arm catches the object THERE — including downstream of X_OPT,
+which the old static scheme would have dropped as "passed".
+
+evaluate() returns a Decision; the caller (pipeline.sender_worker) computes the
 encoder-based x_current (Phase A) and v_belt (Phase B) and handles the
 belt-stopped (v<=0) and queue-watchdog guards before calling this — here
-v_belt is assumed > 0.
+v_belt is assumed > 0. The SCOL program is unchanged: it receives X_int in the
+same CMD2 frame and stages APPROACH/LIFT at X_int + APPROACH_CLEARANCE_MM.
 
 Actions:
-    PICK     feasible (t_rob <= t_obj) AND within the lead window -> CMD2 at X_OPT
-    WAIT     too far, or not catchable from here -> CMD1 pre-position at ROBOT_X_MIN
-    DISCARD  object already passed X_OPT -> unreachable
+    PICK     natural intercept reachable -> CMD2 at the variable X_int
+    WAIT     intercept not yet in the envelope (too far up/downstream) -> CMD1
+    DISCARD  object already past the whole reach envelope -> unreachable
     REJECT   target Y outside the work envelope
 """
 
 from collections import namedtuple
 
 from vision_pi5.config import (
-    X_OPT, LATENCY_OFFSET, ROBOT_Y_MIN, ROBOT_Y_MAX, BOUNDARY_TOLERANCE_MM,
+    ROBOT_Y_MIN, ROBOT_Y_MAX, BOUNDARY_TOLERANCE_MM,
+    ROBOT_X_MIN, ROBOT_X_MAX, APPROACH_CLEARANCE_MM,
+    INTERCEPT_MAX_ITERS, INTERCEPT_TOL_MM,
 )
 
 PICK    = "PICK"
@@ -28,12 +40,40 @@ HOLD    = "HOLD"
 DISCARD = "DISCARD"
 REJECT  = "REJECT"
 
-# t_obj / t_rob are None for DISCARD; t_rob is None for REJECT.
-Decision = namedtuple("Decision", "action t_obj t_rob x_current")
+# Reachable intercept band: the pick X must leave room for the SCOL approach
+# (X_int + APPROACH_CLEARANCE_MM) inside ROBOT_X_MAX, and clear the dead-zone
+# buffer at ROBOT_X_MIN.
+INTERCEPT_X_MIN = ROBOT_X_MIN + BOUNDARY_TOLERANCE_MM
+INTERCEPT_X_MAX = ROBOT_X_MAX - APPROACH_CLEARANCE_MM - BOUNDARY_TOLERANCE_MM
+
+# t_obj / t_rob are None for DISCARD/REJECT; x_intercept is None unless PICK/WAIT.
+Decision = namedtuple("Decision", "action t_obj t_rob x_current x_intercept")
+
+
+def _solve_intercept(x_current, v_belt, last_robot, y_val, z_val, predictor):
+    """Fixed-point solve of X_int = x_current + v_belt * t_rob(robot -> X_int).
+
+    Seeds at the object's current position and iterates; the map's slope is
+    ~ v_belt / SCARA_MAX_SPEED << 1, so it contracts to within INTERCEPT_TOL_MM
+    in 1-2 steps. Returns (x_int, t_rob) evaluated AT the converged point, so
+    t_obj = (x_int - x_current)/v_belt == t_rob there.
+    """
+    x_int = x_current
+    t_rob = predictor.predict(last_robot[0], last_robot[1], last_robot[2],
+                              x_int, y_val, z_val)
+    for _ in range(INTERCEPT_MAX_ITERS):
+        x_new = x_current + v_belt * t_rob
+        t_rob = predictor.predict(last_robot[0], last_robot[1], last_robot[2],
+                                  x_new, y_val, z_val)
+        converged = abs(x_new - x_int) <= INTERCEPT_TOL_MM
+        x_int = x_new
+        if converged:
+            break
+    return x_int, t_rob
 
 
 def evaluate(entry, x_current, v_belt, last_robot, predictor, z_val):
-    """Compute the pick decision for one queued object, meeting at the static X_OPT.
+    """Compute the interception decision for one queued object.
 
     entry:      dict with key y (x / pulse_snap already folded into x_current)
     x_current:  object's belt position NOW from the encoder (Phase A, mm)
@@ -44,26 +84,26 @@ def evaluate(entry, x_current, v_belt, last_robot, predictor, z_val):
     """
     y_val = entry["y"]
 
-    # Object already passed the fixed optimal point -> unreachable.
-    if x_current > X_OPT:
-        return Decision(DISCARD, None, None, x_current)
+    # Already past the whole reachable envelope -> cannot intercept anywhere.
+    if x_current > INTERCEPT_X_MAX:
+        return Decision(DISCARD, None, None, x_current, None)
 
-    t_obj = (X_OPT - x_current) / v_belt
-
-    # Y must be inside the work envelope, with a safety buffer LARGER than the
-    # TSL3000's 0.001mm comparison dead-zone, so the robot never receives a
-    # near-boundary coordinate its own IF would mis-evaluate as in-range.
+    # Y must be inside the work envelope, with a buffer LARGER than the TSL3000's
+    # 0.001mm comparison dead-zone, so the robot never receives a near-boundary
+    # coordinate its own IF would mis-evaluate as in-range.
     if not (ROBOT_Y_MIN + BOUNDARY_TOLERANCE_MM <= y_val <= ROBOT_Y_MAX - BOUNDARY_TOLERANCE_MM):
-        return Decision(REJECT, t_obj, None, x_current)
+        return Decision(REJECT, None, None, x_current, None)
 
-    t_rob = predictor.predict(
-        last_robot[0], last_robot[1], last_robot[2],
-        X_OPT,         y_val,         z_val)
+    x_int, t_rob = _solve_intercept(x_current, v_belt, last_robot, y_val, z_val, predictor)
+    t_obj = (x_int - x_current) / v_belt          # == t_rob at the converged point
 
-    # PICK only when the arm can arrive no later than the object (feasibility gate
-    # t_rob <= t_obj -> it won't descend into empty belt) AND the object is within
-    # the lead window. Otherwise WAIT: pre-position / keep waiting. The old HOLD
-    # margin (WAIT_MARGIN_S) is dropped, so WAIT goes straight to PICK -> less idle.
-    if t_rob <= t_obj <= t_rob + LATENCY_OFFSET:
-        return Decision(PICK, t_obj, t_rob, x_current)
-    return Decision(WAIT, t_obj, t_rob, x_current)
+    # Natural meeting point is inside the reach envelope -> intercept THERE. By the
+    # fixed point t_obj == t_rob, so the arm arrives exactly with the object.
+    if INTERCEPT_X_MIN <= x_int <= INTERCEPT_X_MAX:
+        return Decision(PICK, t_obj, t_rob, x_current, x_int)
+
+    # Meeting point not yet reachable (object too far upstream, or so fast the
+    # intercept lies beyond the envelope) -> pre-position / keep waiting. As the
+    # object advances, x_current grows and the intercept slides into the envelope
+    # (upstream case) or x_current eventually passes INTERCEPT_X_MAX (DISCARD).
+    return Decision(WAIT, t_obj, t_rob, x_current, x_int)

@@ -1,11 +1,12 @@
 """Sender worker — drive the SCARA to intercept queued objects.
 
 Each cycle it drains the queue and commits to the SINGLE most-urgent reachable
-target (earliest-deadline = closest to X_OPT); only that object drives the arm,
-so newer upstream objects never preempt the pre-position (no lane jitter). The
-temporal decision lives in processing.trajectory.evaluate(); this loop executes
-the verdict: fire CMD2 at X_OPT (with a dead-reckoning vacuum timer), pre-position
-via CMD1, hold/re-queue, or discard. sender_state is published under sender_lock.
+target (earliest-deadline = furthest along the belt); only that object drives the
+arm, so newer upstream objects never preempt the pre-position (no lane jitter).
+The interception decision lives in processing.trajectory.evaluate(), which solves
+the variable meeting point X_int; this loop executes the verdict: fire CMD2 at the
+variable X_int (with a dead-reckoning vacuum timer), pre-position via CMD1,
+hold/re-queue, or discard. sender_state is published under sender_lock.
 """
 
 import time
@@ -13,7 +14,7 @@ import queue
 import threading
 
 from vision_pi5.config import (
-    C_FIXED, TRACK_TIMEOUT_S, X_OPT, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
+    C_FIXED, TRACK_TIMEOUT_S, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
     Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
     R_ENC, STARVED_ALARM_S,
 )
@@ -72,9 +73,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 sender_state["fault"]  = ""
 
         # --- Drain the queue, then commit to the SINGLE most-urgent reachable
-        #     target (earliest-deadline = closest to X_OPT). This is the arbiter:
-        #     only ONE object drives the arm, so newer upstream objects can never
-        #     preempt the pre-position -> no lane jitter. ----
+        #     target (earliest-deadline = furthest along the belt). This is the
+        #     arbiter: only ONE object drives the arm, so newer upstream objects
+        #     can never preempt the pre-position -> no lane jitter. ----
         try:
             candidates = [result_queue.get(timeout=0.1)]
         except queue.Empty:
@@ -107,8 +108,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 print(f"[SENDER] Bo qua — vat ton trong queue qua lau (>{TRACK_TIMEOUT_S}s)")
                 continue
             x_cur = e["x"] + (c_now - e["pulse_snap"]) * R_ENC   # Phase A spatial update
-            if x_cur > X_OPT:
-                print(f"[SENDER] Bo qua — vat da qua X_OPT (x={x_cur:.1f} > {X_OPT:.1f})")
+            if x_cur > traj.INTERCEPT_X_MAX:
+                print(f"[SENDER] Bo qua — vat da qua vung voi toi "
+                      f"(x={x_cur:.1f} > {traj.INTERCEPT_X_MAX:.1f})")
                 continue
             reachable.append((x_cur, e))
 
@@ -122,8 +124,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             time.sleep(0.03)
             continue
 
-        # Earliest-deadline arbitration: largest x_current is closest to X_OPT, i.e.
-        # soonest to arrive -> the committed target. Every other object waits its turn.
+        # Earliest-deadline arbitration: largest x_current is furthest along the
+        # belt, i.e. soonest to leave the reach envelope -> the committed target.
+        # Every other object waits its turn.
         reachable.sort(key=lambda pair: pair[0], reverse=True)
         x_current, entry = reachable[0]
         for _, e in reachable[1:]:
@@ -148,6 +151,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             continue   # passed X_OPT (normally pre-filtered in the drain) — drop
 
         t_obj, t_rob, x_current = dec.t_obj, dec.t_rob, dec.x_current
+        x_int                   = dec.x_intercept     # variable interception point (Task 4)
 
         if dec.action == traj.PICK:
             # ===== PERFECT TEMPORAL WINDOW -> pick now at the static coordinate =====
@@ -166,9 +170,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             print(f"  Snapshot X     : {x_snapshot:.3f}  v_snap={v_snapshot:.1f}mm/s")
             print(f"  Delay elapsed  : {elapsed*1000:.0f}ms   X hien tai={x_current:.3f}")
             print(f"  Robot xuat phat: X={last_robot_x:.3f} Y={last_robot_y:.3f} Z={last_robot_z:.3f}")
-            print(f"  t_obj -> X_OPT : {t_obj*1000:.0f}ms  (v_belt={v_belt:.1f}mm/s, encoder)")
+            print(f"  t_obj -> X_int : {t_obj*1000:.0f}ms  (v_belt={v_belt:.1f}mm/s, encoder)")
             print(f"  t_rob (ML)     : {t_rob*1000:.0f}ms  (+lat {LATENCY_OFFSET*1000:.0f}ms)")
-            print(f"  PICK @ STATIC  : X={X_OPT:.3f}  Y={y_val:.3f}  Z=28.000  C={C_FIXED:.3f}")
+            print(f"  PICK @ INTERCEPT: X={x_int:.3f}  Y={y_val:.3f}  Z=28.000  C={C_FIXED:.3f}")
             print(f"  Vacuum lead    : energize in {relay_delay*1000:.0f}ms")
             print(f"  Place          : {place_info}")
             print(f"{'='*65}")
@@ -176,7 +180,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             with sender_lock:
                 sender_state["moving"]          = True
                 sender_state["armed"]           = False
-                sender_state["last_x"]          = X_OPT
+                sender_state["last_x"]          = x_int
                 sender_state["last_y"]          = y_val
                 sender_state["last_shape"]      = shape
                 sender_state["last_shape_code"] = shape_code
@@ -188,7 +192,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             # on_commit fires the moment the robot is GO'd to move -> accurate
             # vacuum lead, and it never energizes on an aborted/failed transmit.
             success = link.send_to_robot(
-                cmd_seq, X_OPT, y_val, z_val, C_FIXED, shape_code,
+                cmd_seq, x_int, y_val, z_val, C_FIXED, shape_code,
                 on_commit=suction_timer.start,
                 on_release=lambda: uart_comm.send_relay(suction=False))  # drop at discharge
 

@@ -3,9 +3,10 @@
 Drives pipeline.sender_worker.thread_sender with fakes for the predictor,
 uart_comm, and RobotLink (no camera, robot, or serial). Verifies:
 
-  * PERFECT WINDOW  -> CMD2 at the static X_OPT, vacuum fired by async timer
+  * PERFECT WINDOW  -> CMD2 at the solved intercept X_int, vacuum by async timer
   * TOO FAR         -> CMD1 to exactly ROBOT_X_MIN (never beyond)
-  * ALREADY PASSED  -> discarded (x_current > X_OPT)
+  * PAST X_OPT      -> still intercepted downstream (Task 4), not discarded
+  * PAST REACH      -> discarded (x_current > INTERCEPT_X_MAX)
   * BELT STOPPED    -> no division-by-zero; object held, thread survives
   * PULSE ADVANCE   -> a far snapshot becomes pickable once the absolute pulse
                        count advances it to the window (Phase A spatial update)
@@ -25,8 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vision_pi5 import config
 from vision_pi5.pipeline import sender_worker as sw
+from vision_pi5.processing import trajectory as traj
 
-XO = config.X_OPT     # rendezvous; pick-entry x positions are given relative to it
+XO = config.X_OPT     # old nominal rendezvous; pick-entry x positions given relative to it
 
 
 # --------------------------------------------------------------------------- #
@@ -124,19 +126,36 @@ def _run(link, rq, stop, timeout=3.0):
 # --------------------------------------------------------------------------- #
 #  Tests
 # --------------------------------------------------------------------------- #
-def test_perfect_window_picks_at_static_x_opt():
-    # x_current = -100 (pulse delta 0); t_obj ~= 0.05 <= t_rob(0.1)+LATENCY(0.05).
+def test_perfect_window_picks_at_intercept():
+    # In-envelope object -> CMD2 at the solved intercept X_int = x_current + v*t_rob
+    # = (XO-240) + 2000*0.1 = XO-40, NOT the static X_OPT (Task 4).
     relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0, pulse_count=0)
     stop = threading.Event()
     link = FakeLink(stop_event=stop, pick_block_s=0.2)  # let the vacuum timer fire
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=XO - 240.0, v=2000.0, pulse_snap=0))   # t_obj=0.12 -> feasible(t_rob 0.1) PICK
+    rq.put(_entry(x=XO - 240.0, v=2000.0, pulse_snap=0))
     _run(link, rq, stop)
 
     assert link.pick_calls, "expected a CMD2 pick"
-    assert link.pick_calls[0][0] == config.X_OPT, f"pick X must be X_OPT, got {link.pick_calls[0][0]}"
+    assert abs(link.pick_calls[0][0] - (config.X_OPT - 40.0)) < 1e-6, \
+        f"pick X must be the intercept XO-40, got {link.pick_calls[0][0]}"
     assert not link.boundary_calls, "should not pre-position when already in window"
     assert relay_log == [True, False], f"vacuum sequence wrong: {relay_log}"
+
+
+def test_object_past_x_opt_still_picked():
+    # Field-log regression: an object 30 mm PAST X_OPT was DISCARDED by the static
+    # scheme. Task 4 intercepts it at a downstream X_int instead of dropping it.
+    _install_fakes(t_rob=0.1, belt_speed=100.0, pulse_count=0)
+    stop = threading.Event()
+    link = FakeLink(stop_event=stop, pick_block_s=0.2)
+    rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
+    rq.put(_entry(x=XO + 30.0, v=100.0, pulse_snap=0))
+    _run(link, rq, stop)
+
+    assert link.pick_calls, "object past X_OPT must still be intercepted downstream"
+    assert link.pick_calls[0][0] > config.X_OPT, \
+        f"intercept must be downstream of X_OPT, got {link.pick_calls[0][0]}"
 
 
 def test_too_far_commands_exactly_boundary():
@@ -159,11 +178,11 @@ def test_passed_object_is_discarded():
     stop = threading.Event()
     link = FakeLink(stop_event=None)     # don't auto-stop; nothing should be called
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
-    rq.put(_entry(x=XO + 50.0, v=100.0, pulse_snap=0))   # x_current > X_OPT -> discard
+    rq.put(_entry(x=traj.INTERCEPT_X_MAX + 50.0, v=100.0, pulse_snap=0))  # past the whole reach
     t = _run(link, rq, stop, timeout=0.3)
     stop.set(); t.join(timeout=1.0)
 
-    assert not link.pick_calls and not link.boundary_calls, "passed object must be discarded"
+    assert not link.pick_calls and not link.boundary_calls, "object past reach must be discarded"
     assert relay_log == []
 
 
@@ -197,7 +216,8 @@ def test_pulse_advance_makes_far_snapshot_pickable():
     _run(link, rq, stop)
 
     assert link.pick_calls, "encoder pulse advance should have made the object pickable"
-    assert link.pick_calls[0][0] == config.X_OPT
+    # intercept XO-40; tolerance absorbs the integer-pulse rounding of the 100 mm advance
+    assert abs(link.pick_calls[0][0] - (config.X_OPT - 40.0)) < 0.05
     assert not link.boundary_calls
 
 

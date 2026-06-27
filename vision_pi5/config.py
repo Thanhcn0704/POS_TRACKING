@@ -33,7 +33,7 @@ HSV_CALIB_FILE    = os.path.join(MODELS_DIR, "hsv_calib.npz")
 #       python3 -m tools.calibrate_encoder
 # The value below is the existing pre-refactor constant (provenance UNVERIFIED),
 # kept TEMPORARILY. Recalibrate and overwrite this one line before production.
-R_ENC = 0.003            # mm / pulse   <-- recalibrate, do not trust blindly
+R_ENC = 0.0031          # mm / pulse   <-- recalibrate, do not trust blindly
 
 # --- STM32 UART link -------------------------------------------------------- #
 # Telemetry frame (STM32 -> Pi, every 100 ms, 11 bytes):
@@ -150,6 +150,21 @@ BOUNDARY_TOLERANCE_MM = 0.1     # > TSL3000 0.001mm dead-zone; safe mechanical m
 # speed — a faster belt shrinks the catch window and can make 25% unpickable.
 X_OPT                = ROBOT_X_MIN + 0.25 * (0.0 - ROBOT_X_MIN)   # = -155.25 mm
 LATENCY_OFFSET       = 0.05     # s — TCP + mechanical accel / valve lead compensation
+
+# --- Direct-interception solver (processing.trajectory, Task 4) ------------- #
+# Per-object meeting point X_int REPLACES the static X_OPT: solve the fixed point
+#   X_int = x_current + v_belt * t_rob(robot_last -> X_int)
+# so the arm meets each object wherever they naturally coincide — downstream of
+# X_OPT when the object would otherwise drift past it — widening the catch window
+# from a single point to the whole reach envelope. X_OPT is kept only as a
+# documented nominal/reference rendezvous; the solver no longer pins to it.
+#   APPROACH_CLEARANCE_MM: the SCOL stages APPROACH/LIFT at pick_X + 10 (observed
+#     on the line), so X_int + this must stay within ROBOT_X_MAX.
+#   INTERCEPT_MAX_ITERS / _TOL_MM: fixed-point iteration budget. The map is a
+#     contraction (slope ~ v_belt / SCARA_MAX_SPEED << 1), so it converges in 1-2.
+APPROACH_CLEARANCE_MM = 10.0
+INTERCEPT_MAX_ITERS   = 4
+INTERCEPT_TOL_MM      = 1.0
 
 # --- TCP coordinate-ACK handshake (comms.robot_link <-> robot_scara SCOL) ---
 # SCOL "Non-protocol" INPUT accepts NUMERIC data only, comma-separated, CR-
