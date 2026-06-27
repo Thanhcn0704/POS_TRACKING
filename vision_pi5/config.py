@@ -58,11 +58,16 @@ KALMAN_Q = 50.0       # process-noise variance, (pulses/s)^2 per step
 KALMAN_R = 5000.0     # measurement-noise variance, (pulses/s)^2
 
 # --- Safe-state / E-Stop monitor (pause-and-alarm with auto-recovery) -------- #
-# The sender pauses dispatching (and fail-safes the vacuum) while any of these
-# trip, then auto-resumes when the link/encoder recover:
-#   (a) UART silence  -> handled by the heartbeat (HEARTBEAT_TIMEOUT_S above)
-#   (b) encoder stall -> total_ticks frozen longer than ENCODER_STALL_TIMEOUT_S
-#   (c) pulse jump    -> |d_ticks| above MAX_TICKS_PER_FRAME (corrupt / int32 wrap)
+# The sender pauses dispatching (and fail-safes the vacuum) while the POSITION
+# stream the tracker relies on is unusable, then auto-resumes when it recovers:
+#   (a) telemetry stale -> no VALID telemetry frame within TELEMETRY_TIMEOUT_S
+#   (b) encoder stall   -> total_ticks frozen longer than ENCODER_STALL_TIMEOUT_S
+#   (c) pulse jump      -> |d_ticks| above MAX_TICKS_PER_FRAME (corrupt / int32 wrap)
+# The heartbeat ping/ACK (HEARTBEAT_TIMEOUT_S) is a LINK INDICATOR ONLY and does
+# NOT gate dispatch: the STM32 can drop a ping ACK while position telemetry keeps
+# flowing, so pausing on a missed ping needlessly stalls picking (catch window lost).
+TELEMETRY_TIMEOUT_S     = 0.5        # s without a valid telemetry frame -> position stale
+                                     # (~10Hz telemetry: tolerates a few dropped frames)
 ENCODER_STALL_TIMEOUT_S = 1.0        # s of frozen total_ticks -> stall fault
 MAX_TICKS_PER_FRAME     = 100000     # |delta| above this -> implausible jump (tune to belt)
 

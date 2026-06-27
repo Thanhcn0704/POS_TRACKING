@@ -31,6 +31,7 @@ KALMAN_Q    = _cfg.KALMAN_Q
 KALMAN_R    = _cfg.KALMAN_R
 ENCODER_STALL_TIMEOUT_S = _cfg.ENCODER_STALL_TIMEOUT_S
 MAX_TICKS_PER_FRAME     = _cfg.MAX_TICKS_PER_FRAME
+TELEMETRY_TIMEOUT_S     = _cfg.TELEMETRY_TIMEOUT_S   # dispatch gate: position-data freshness
 
 _data_lock  = threading.Lock()
 _relay_lock = threading.Lock()
@@ -40,6 +41,7 @@ current_total_ticks    = 0        # absolute encoder pulse count (int32 from STM
 current_pulse_freq_hz  = 0.0      # Pi-derived pulse rate (pulses/sec, Kalman-smoothed)
 encoder_ok             = True     # safe-state: False on encoder stall / implausible jump
 _encoder_reason        = ""       # "" | "encoder_stall" | "pulse_jump"
+_last_telemetry_time   = 0.0      # monotonic time of the last VALID telemetry frame
 _ser: serial.Serial    = None
 
 # Protocol constants (aliased from uart_protocol for local use / tests)
@@ -124,19 +126,27 @@ def get_motor_snapshot() -> tuple:
 
 
 def get_safe_state() -> tuple:
-    """Aggregate health for the sender's pause-and-alarm gate.
+    """POSITION-DATA health for the sender's pause-and-alarm dispatch gate.
+
+    Dispatch pauses ONLY when the encoder position stream the tracker depends on
+    is actually unusable: telemetry has gone silent, the encoder has stalled, or a
+    pulse jump corrupted the count. The heartbeat ping/ACK (get_uart_status) is a
+    SEPARATE link-health indicator and intentionally does NOT gate dispatch — the
+    STM32 can drop a ping ACK while position telemetry keeps flowing, and pausing
+    on that would needlessly stall picking and lose the catch window.
 
     Returns (ok, reason); reason is "" when ok, else the first failing cause:
-      "uart_link_loss" (heartbeat), "encoder_stall", or "pulse_jump".
-    The sender pauses dispatching while not ok and auto-resumes when it clears.
+      "telemetry_stale", "encoder_stall", or "pulse_jump".
     """
-    with _status_lock:
-        link = uart_link_ok
-    if not link:
-        return False, "uart_link_loss"
+    now = time.monotonic()
     with _data_lock:
-        if not encoder_ok:
-            return False, _encoder_reason or "encoder_fault"
+        last_tel   = _last_telemetry_time
+        enc_ok     = encoder_ok
+        enc_reason = _encoder_reason
+    if last_tel == 0.0 or (now - last_tel) > TELEMETRY_TIMEOUT_S:
+        return False, "telemetry_stale"
+    if not enc_ok:
+        return False, enc_reason or "encoder_fault"
     return True, ""
 
 
@@ -194,7 +204,7 @@ class _RxState:
 def _decode_telemetry(frame, st):
     """Decode an 11-byte telemetry frame (caller guarantees the 0xAA/0xBB header)."""
     global current_belt_speed, current_total_ticks, current_pulse_freq_hz
-    global encoder_ok, _encoder_reason
+    global encoder_ok, _encoder_reason, _last_telemetry_time
     payload = frame[2:10]
     ck_byte = frame[10]
 
@@ -232,6 +242,7 @@ def _decode_telemetry(frame, st):
         current_total_ticks   = ticks_val
         encoder_ok            = enc_ok
         _encoder_reason       = enc_reason
+        _last_telemetry_time  = now                         # position-data freshness stamp
 
     st.consecutive_errors = 0
 
@@ -265,8 +276,8 @@ def _check_heartbeat_timeout(now):
             uart_link_ok = False
         if was_ok or not _fault_logged:
             _fault_logged = True
-            print(f"[UART] UART Communication Fault — khong nhan ACK trong "
-                  f"{HEARTBEAT_TIMEOUT_S:.1f}s @ {time.strftime('%H:%M:%S')}")
+            print(f"[UART] Heartbeat: khong nhan ping-ACK trong {HEARTBEAT_TIMEOUT_S:.1f}s "
+                  f"@ {time.strftime('%H:%M:%S')} (chi bao link; dispatch van chay theo telemetry)")
 
 
 def _process_rx_buffer(buffer, st):
@@ -307,7 +318,7 @@ def _process_rx_buffer(buffer, st):
 
 def thread_uart_receiver(stop_event: threading.Event):
     global current_belt_speed, current_pulse_freq_hz, encoder_ok, _encoder_reason
-    global _ser, _last_ack_time, uart_link_ok, _fault_logged
+    global _ser, _last_ack_time, uart_link_ok, _fault_logged, _last_telemetry_time
 
     _open_serial()
 
@@ -326,8 +337,10 @@ def thread_uart_receiver(stop_event: threading.Event):
 
     now = time.monotonic()
     with _status_lock:
-        _last_ack_time = now            # grace period before the first fault
+        _last_ack_time = now            # grace period before the first heartbeat fault
         uart_link_ok   = False
+    with _data_lock:
+        _last_telemetry_time = now      # grace period before the first telemetry-stale gate
     _fault_logged = False
     last_ping     = 0.0
 

@@ -14,6 +14,7 @@ Run:
 
 import os
 import sys
+import time
 import struct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -119,6 +120,39 @@ def test_mixed_and_junk_buffer():
     assert ur.current_total_ticks == 555          # telemetry parsed past the junk
     assert ur.get_uart_status() is True           # ACK parsed
     assert len(buf) == 0
+
+
+# --- Dispatch gate (get_safe_state) is decoupled from the heartbeat ---------- #
+def test_dispatch_gate_ignores_heartbeat_loss():
+    # The STM32 dropped ping ACKs (link "down"), but position TELEMETRY is fresh —
+    # dispatch must CONTINUE (this is the fix: a missed ping no longer pauses picks).
+    _reset_status()
+    ur.uart_link_ok        = False                 # heartbeat indicator: down
+    ur.encoder_ok          = True
+    ur._last_telemetry_time = time.monotonic()     # but telemetry is fresh
+    ok, reason = ur.get_safe_state()
+    assert ok is True and reason == "", (ok, reason)
+
+
+def test_dispatch_gate_pauses_on_stale_telemetry():
+    # Real position-data loss: no telemetry within the window -> pause dispatch.
+    _reset_status()
+    ur.uart_link_ok        = True                  # heartbeat fine, irrelevant
+    ur.encoder_ok          = True
+    ur._last_telemetry_time = time.monotonic() - (ur.TELEMETRY_TIMEOUT_S + 1.0)
+    ok, reason = ur.get_safe_state()
+    assert ok is False and reason == "telemetry_stale", (ok, reason)
+
+
+def test_dispatch_gate_pauses_on_encoder_fault():
+    # Telemetry fresh but the encoder stalled -> still a dispatch-critical pause.
+    _reset_status()
+    ur.uart_link_ok        = True
+    ur._last_telemetry_time = time.monotonic()
+    ur.encoder_ok          = False
+    ur._encoder_reason     = "encoder_stall"
+    ok, reason = ur.get_safe_state()
+    assert ok is False and reason == "encoder_stall", (ok, reason)
 
 
 def _run_standalone():
