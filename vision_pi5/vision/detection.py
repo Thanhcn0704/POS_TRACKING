@@ -13,7 +13,7 @@ import cv2
 from vision_pi5.config import (
     MORPH_KERNEL_SIZE, AREA_MIN, AREA_MAX, SOLIDITY_MIN,
     PHYSICAL_AREA_MIN, PHYSICAL_AREA_MAX, PHYSICAL_DIM_MIN, PHYSICAL_DIM_MAX,
-    SHAPE_CODE, SHAPE_CODE_DEFAULT, FOV_EDGE_MARGIN_PX,
+    SHAPE_CODE, SHAPE_CODE_DEFAULT, FOV_EDGE_MARGIN_PX, ROI_ENTRY_MARGIN_PX,
 )
 from vision_pi5.vision.geometry import pixel_to_robot, parallax_origin
 from vision_pi5.vision.shape import classify_shape
@@ -34,6 +34,26 @@ def contour_fully_in_frame(contour, frame_w, frame_h, margin):
     x, y, w, h = cv2.boundingRect(contour)
     return (x >= margin and y >= margin
             and (x + w) <= frame_w - margin and (y + h) <= frame_h - margin)
+
+
+# ROI shrunk by the entry guard band is reused every frame, so cache the erosion and
+# only recompute when the ROI array itself (recalibration) or the margin changes.
+_ROI_INNER_CACHE = {"src": None, "margin": None, "out": None}
+
+
+def _roi_inner(roi_mask, margin):
+    """ROI eroded inward by `margin` px. A contour lying fully inside THIS has cleared
+    every ROI edge -- the xmin entry plane included -- by the guard band, so it is
+    genuinely fully entered and not straddling the boundary."""
+    if roi_mask is None or margin <= 0:
+        return roi_mask
+    c = _ROI_INNER_CACHE
+    if c["src"] is roi_mask and c["margin"] == margin:
+        return c["out"]
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin + 1, 2 * margin + 1))
+    out = cv2.erode(roi_mask, k)
+    c["src"], c["margin"], c["out"] = roi_mask, margin, out
+    return out
 
 
 def _build_object(contour, pixel_area, solidity, phys_area, max_dim,
@@ -91,19 +111,25 @@ def detect_objects(frame, roi_mask, hsv_params,
     hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower, upper)
 
-    if roi_mask is not None:
-        mask = cv2.bitwise_and(mask, roi_mask)
-
+    # Do NOT clip to the ROI before contour extraction. Clipping first would make a
+    # partially-entered object's contour END at the ROI edge, so it reads as a
+    # complete-but-wrong shape that is tautologically "inside" the ROI -> premature
+    # classification on a partial silhouette. We extract the TRUE silhouette here and
+    # gate on full ROI containment below instead.
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
                                        (MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
+    roi_inner    = _roi_inner(roi_mask, ROI_ENTRY_MARGIN_PX)
+    # The HUD/Mask window still shows the ROI-clipped view (display only).
+    display_mask = cv2.bitwise_and(mask, roi_mask) if roi_mask is not None else mask
+
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     objects = []
     if not contours:
-        return objects, mask
+        return objects, display_mask
 
     for c in contours:
         a = cv2.contourArea(c)
@@ -116,11 +142,14 @@ def detect_objects(frame, roi_mask, hsv_params,
         if sol < SOLIDITY_MIN:
             continue
 
-        if roi_mask is not None:
-            if not contour_fully_inside_roi(c, roi_mask):
-                continue
+        # ENTRY INTERLOCK: classify ONLY once the whole TRUE silhouette has cleared
+        # the ROI boundary (xmin entry plane included) by the guard band. A contour
+        # still poking past the eroded ROI edge is skipped, not judged -> the verdict
+        # is never locked on a partial, not-yet-fully-entered shape.
+        if roi_mask is not None and not contour_fully_inside_roi(c, roi_inner):
+            continue
 
-        # Reject contours still crossing into the FOV (clipped -> wrong shape).
+        # Frame-edge backstop (covers objects entering the raw FOV when ROI ~ full frame).
         if not contour_fully_in_frame(c, frame_w, frame_h, FOV_EDGE_MARGIN_PX):
             continue
 
@@ -150,7 +179,7 @@ def detect_objects(frame, roi_mask, hsv_params,
         if obj is not None:
             objects.append(obj)
 
-    return objects, mask
+    return objects, display_mask
 
 
 def run_detection(frame, roi_mask, hsv_params,
