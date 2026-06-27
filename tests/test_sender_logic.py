@@ -286,6 +286,39 @@ def test_arbiter_prepositions_only_most_urgent_lane():
     assert not link.pick_calls, "neither object is in the pick window yet"
 
 
+def test_dedup_suppresses_same_spot():
+    # Picked at x=-100 (pulse 0); a candidate at the same spot within the window
+    # is a re-detected fragment -> duplicate.
+    last_pick = (-100.0, -250.0, 0, 100.0)             # (x, y, pulse, t)
+    assert sw._is_duplicate_pick(-100.0, -250.0, 0, last_pick, now=100.5) is True
+
+
+def test_dedup_allows_distinct_object():
+    # 40 mm away (> DEDUP_RADIUS_MM) is a genuinely different object -> keep it.
+    last_pick = (-100.0, -250.0, 0, 100.0)
+    assert sw._is_duplicate_pick(-100.0 + 40.0, -250.0, 0, last_pick, now=100.1) is False
+
+
+def test_dedup_projects_with_belt():
+    # The picked object projects forward by the belt: after 50 mm of advance the
+    # match point moves; a fragment there is a duplicate, the OLD spot is not.
+    last_pick = (-100.0, -250.0, 0, 100.0)
+    adv  = int(round(50.0 / config.R_ENC))
+    proj = -100.0 + adv * config.R_ENC
+    assert sw._is_duplicate_pick(proj + 3.0, -250.0, adv, last_pick, now=100.5) is True
+    assert sw._is_duplicate_pick(-100.0,     -250.0, adv, last_pick, now=100.5) is False
+
+
+def test_dedup_expires_after_window():
+    last_pick = (-100.0, -250.0, 0, 100.0)
+    assert sw._is_duplicate_pick(-100.0, -250.0, 0, last_pick,
+                                 now=100.0 + config.DEDUP_WINDOW_S + 0.1) is False
+
+
+def test_dedup_no_prior_pick():
+    assert sw._is_duplicate_pick(-100.0, -250.0, 0, None, now=1.0) is False
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

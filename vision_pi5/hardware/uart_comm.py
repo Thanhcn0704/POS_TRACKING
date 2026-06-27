@@ -150,14 +150,24 @@ def get_safe_state() -> tuple:
     return True, ""
 
 
-def send_relay(suction: bool, cylinder_override: bool = False) -> bool:
+def send_relay(suction: bool, cylinder_override: bool = False, repeats: int = 3) -> bool:
+    """Set Relay2 (vacuum) ON/OFF. The 0xCC frame is emitted `repeats` times.
+
+    The STM32 RX is a single best-effort 4-byte state machine shared with the
+    heartbeat that silently drops a byte on overrun, so a lone fire-and-forget
+    command can be lost (vacuum never actuates -> failed pick). The command is
+    IDEMPOTENT (it just sets a GPIO level), so resending is harmless and a single
+    dropped frame no longer loses the actuation. Each frame is ~350us @115200, so
+    the dead-reckoning vacuum timing is unaffected.
+    """
     global _ser
     if _ser is None or not _ser.is_open:
         return False
     packet = proto.encode_relay(suction, cylinder_override)
     with _relay_lock:
         try:
-            _ser.write(packet)
+            for _ in range(max(1, repeats)):
+                _ser.write(packet)
             return True
         except Exception as e:
             print(f"[UART] Loi gui lenh: {e}")

@@ -16,11 +16,28 @@ import threading
 from vision_pi5.config import (
     C_FIXED, TRACK_TIMEOUT_S, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
     Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
-    R_ENC, STARVED_ALARM_S,
+    R_ENC, STARVED_ALARM_S, DEDUP_RADIUS_MM, DEDUP_WINDOW_S,
 )
 from vision_pi5.processing import trajectory as traj
 from vision_pi5.processing.predictor import get_predictor
 from vision_pi5.hardware import uart_comm
+
+
+def _is_duplicate_pick(x_cur, y, c_now, last_pick, now):
+    """True if (x_cur, y) is a re-detection of the just-picked object.
+
+    last_pick is (x, y, pulse, t) of the previous pick, or None. The picked
+    object's position is projected forward by the encoder (same R_ENC) to `now`;
+    a candidate within DEDUP_RADIUS_MM of it, inside DEDUP_WINDOW_S, is a fragment
+    of the object already removed (track fragmented into a new id) -> drop it.
+    """
+    if last_pick is None:
+        return False
+    lx, ly, lpulse, lt = last_pick
+    if (now - lt) >= DEDUP_WINDOW_S:
+        return False
+    picked_x_now = lx + (c_now - lpulse) * R_ENC
+    return abs(x_cur - picked_x_now) < DEDUP_RADIUS_MM and abs(y - ly) < DEDUP_RADIUS_MM
 
 
 def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lock=None):
@@ -36,6 +53,7 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
     last_robot_x = T2_X
     last_robot_y = T2_Y
     last_robot_z = T2_Z
+    last_pick    = None       # (x, y, pulse, t) of the last pick — duplicate suppression
 
     print(f"[SENDER] Bat dau. Model ML: {'CO' if predictor.is_model_loaded() else 'KHONG — dung fallback geometric'}")
     print(f"[SENDER] Vi tri robot khoi dong (gia dinh): X={last_robot_x:.3f} Y={last_robot_y:.3f} Z={last_robot_z:.3f}")
@@ -111,6 +129,12 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             if x_cur > traj.INTERCEPT_X_MAX:
                 print(f"[SENDER] Bo qua — vat da qua vung voi toi "
                       f"(x={x_cur:.1f} > {traj.INTERCEPT_X_MAX:.1f})")
+                continue
+            # Suppress a re-detected fragment of the object we just picked (track
+            # fragmented into a new id -> double enqueue -> duplicate move).
+            if _is_duplicate_pick(x_cur, e["y"], c_now, last_pick, now):
+                print(f"[SENDER] Bo qua trung lap — vat vua pick (track phan manh), "
+                      f"track_id={e.get('track_id')}")
                 continue
             reachable.append((x_cur, e))
 
@@ -205,6 +229,9 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 sender_state["queue_size"] = result_queue.qsize()
 
             if success:
+                # Record the pick (current position + pulse) for duplicate
+                # suppression of a re-detected fragment on later loops.
+                last_pick = (x_current, y_val, c_now, now)
                 stop_x, stop_y, stop_z = LAST_STOP_BY_SHAPE_CODE.get(
                     shape_code, LAST_STOP_BY_SHAPE_CODE[0])
                 last_robot_x, last_robot_y, last_robot_z = stop_x, stop_y, stop_z

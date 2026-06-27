@@ -155,6 +155,30 @@ def test_dispatch_gate_pauses_on_encoder_fault():
     assert ok is False and reason == "encoder_stall", (ok, reason)
 
 
+# --- Idempotent relay resend (vacuum delivery hardening) --------------------- #
+def test_send_relay_resends_idempotent_frame():
+    # The 0xCC frame is emitted `repeats` times so one dropped byte on the STM32's
+    # shared RX path doesn't lose the vacuum actuation.
+    ur._ser = FakeSerial()
+    try:
+        one = bytes(ur.proto.encode_relay(True, False))
+        assert ur.send_relay(True, repeats=3) is True
+        assert bytes(ur._ser.written) == one * 3        # exactly 3 identical frames
+        assert len(one) == 4                            # [0xCC, r1, r2, chk]
+    finally:
+        ur._ser = None
+
+
+def test_send_relay_repeats_floor_is_one():
+    ur._ser = FakeSerial()
+    try:
+        one = bytes(ur.proto.encode_relay(False, False))
+        assert ur.send_relay(False, repeats=0) is True  # clamped to >= 1
+        assert bytes(ur._ser.written) == one
+    finally:
+        ur._ser = None
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

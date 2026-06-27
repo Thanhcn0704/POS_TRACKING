@@ -115,6 +115,17 @@ TRACK_MAX_MISS_S        = 0.40
 TRACK_TIMEOUT_S      = 30.0
 STARVED_ALARM_S      = 10.0    # log an IDLE alarm if the pick queue stays empty this long
 
+# --- Duplicate-pick suppression (sender_worker) ----------------------------- #
+# A detection dropout > TRACK_MAX_MISS_S prunes a track; the SAME physical object
+# is then re-detected under a NEW track id and enqueued twice -> dispatched twice
+# (different cmd_seq, so robot-side ID dedup can't catch it). The sender therefore
+# remembers the last pick and drops any candidate whose belt-projected position
+# lands within DEDUP_RADIUS_MM of it inside DEDUP_WINDOW_S (a re-detected fragment
+# of the object just removed). Keep DEDUP_RADIUS_MM < the minimum real inter-object
+# spacing so a genuinely distinct trailing object is never suppressed.
+DEDUP_RADIUS_MM      = 15.0
+DEDUP_WINDOW_S       = 3.0
+
 # --------------------------------------------------------------------------- #
 #  Offset calibration defaults
 # --------------------------------------------------------------------------- #
