@@ -16,6 +16,7 @@ MODELS_DIR = os.path.join(_ROOT_DIR, "models")
 HOMO_FILE         = os.path.join(MODELS_DIR, "homography_test.npz")
 OFFSET_CALIB_FILE = os.path.join(MODELS_DIR, "offset_calib.npz")
 MODEL_FILE        = os.path.join(MODELS_DIR, "robot_time_model.pkl")
+HSV_CALIB_FILE    = os.path.join(MODELS_DIR, "hsv_calib.npz")
 
 # =========================================================================== #
 #   OPERATOR-ADJUSTABLE HARDWARE CALIBRATION  (edit on the live Pi)            #
@@ -32,7 +33,7 @@ MODEL_FILE        = os.path.join(MODELS_DIR, "robot_time_model.pkl")
 #       python3 -m tools.calibrate_encoder
 # The value below is the existing pre-refactor constant (provenance UNVERIFIED),
 # kept TEMPORARILY. Recalibrate and overwrite this one line before production.
-R_ENC = 0.00295            # mm / pulse   <-- recalibrate, do not trust blindly
+R_ENC = 0.003            # mm / pulse   <-- recalibrate, do not trust blindly
 
 # --- STM32 UART link -------------------------------------------------------- #
 # Telemetry frame (STM32 -> Pi, every 100 ms, 11 bytes):
@@ -174,8 +175,20 @@ MORPH_KERNEL_SIZE    = 7
 # Vision-motion sync (Task 3): classify only when the object is FULLY in frame.
 FOV_EDGE_MARGIN_PX   = 20      # reject contours within this many px of the FOV edge
                                # (still entering -> clipped silhouette -> false shape)
+# Entry interlock (vision.detection): a contour must sit fully inside the ROI shrunk
+# by this many px before it is classified. Contours are extracted from the UNCLIPPED
+# mask, so a not-yet-fully-entered object pokes past the (eroded) ROI edge and is
+# SKIPPED -- never judged on a partial silhouette straddling the xmin entry plane.
+ROI_ENTRY_MARGIN_PX  = 20
 AREA_SETTLE_FRAC     = 0.10    # lock shape only once |d_area|/area < this (area stopped
                                # growing = fully entered, not still crossing in)
+
+# HSV segmentation threshold (h_min,h_max,s_min,s_max,v_min,v_max). This is the
+# SEED/default ONLY; the operator-tuned value is persisted to HSV_CALIB_FILE (via
+# the live display trackbars or tools.collect_shapes, press 's') and loaded by
+# camera.load_hsv() at startup — so a different camera/lighting needs NO code edit.
+# A missing file is NOT a fault (unlike homography): it falls back to this default.
+HSV_DEFAULT          = (0, 179, 0, 60, 140, 255)
 
 # --------------------------------------------------------------------------- #
 #  Camera

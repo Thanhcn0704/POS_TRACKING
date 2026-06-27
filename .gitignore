@@ -20,3 +20,7 @@ Thumbs.db
 # Stray diff dumps
 *.diff.txt
 sim_diff.txt
+
+# Per-machine calibration artifacts + collected samples (not portable across rigs)
+dataset/
+models/hsv_calib.npz

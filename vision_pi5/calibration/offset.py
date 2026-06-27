@@ -11,7 +11,7 @@ from vision_pi5.config import (
     OFFSET_CALIB_FILE, X_SCALE_DEFAULT, X_BIAS_DEFAULT, Y_OFFSET_DEFAULT,
     CAM_W, CAM_H, EMA_ALPHA, STABLE_TIME_S,
 )
-from vision_pi5.hardware.camera import make_capture
+from vision_pi5.hardware.camera import make_capture, load_hsv
 from vision_pi5.vision.detection import run_detection
 
 import time
@@ -59,12 +59,13 @@ def calibrate_offset(cam_id, H, h_cam, h_obj, roi_pts):
 
     cv2.namedWindow("Offset Calib")
     cv2.namedWindow("Mask Calib")
-    cv2.createTrackbar("H Min", "Offset Calib", 0,   179, lambda x: None)
-    cv2.createTrackbar("H Max", "Offset Calib", 179, 179, lambda x: None)
-    cv2.createTrackbar("S Min", "Offset Calib", 0,   255, lambda x: None)
-    cv2.createTrackbar("S Max", "Offset Calib", 60,  255, lambda x: None)
-    cv2.createTrackbar("V Min", "Offset Calib", 140, 255, lambda x: None)
-    cv2.createTrackbar("V Max", "Offset Calib", 255, 255, lambda x: None)
+    _h0, _h1, _s0, _s1, _v0, _v1 = load_hsv()    # seed from the persisted HSV
+    cv2.createTrackbar("H Min", "Offset Calib", _h0, 179, lambda x: None)
+    cv2.createTrackbar("H Max", "Offset Calib", _h1, 179, lambda x: None)
+    cv2.createTrackbar("S Min", "Offset Calib", _s0, 255, lambda x: None)
+    cv2.createTrackbar("S Max", "Offset Calib", _s1, 255, lambda x: None)
+    cv2.createTrackbar("V Min", "Offset Calib", _v0, 255, lambda x: None)
+    cv2.createTrackbar("V Max", "Offset Calib", _v1, 255, lambda x: None)
 
     ema_x        = None
     ema_y        = None

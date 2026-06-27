@@ -2,7 +2,8 @@
 
 Reads the detect payload from display_queue and a locked snapshot of
 sender_state, draws the contour/box/labels and the network/queue status line.
-Press 'q' to stop. With no_display=True it returns immediately (headless).
+Press 'q' to stop, 's' to persist the current HSV trackbars to the calibration
+file (camera.save_hsv). With no_display=True it returns immediately (headless).
 """
 
 import queue
@@ -15,6 +16,7 @@ from vision_pi5.config import (
     CAM_W, CAM_H, C_FIXED, STABLE_TIME_S, PICK_QUEUE_MAX,
     SHAPE_COLORS, PLACE_LABEL,
 )
+from vision_pi5.hardware.camera import save_hsv
 
 
 def thread_display(display_queue, hsv_params_ref, roi_pts, sender_state,
@@ -26,12 +28,15 @@ def thread_display(display_queue, hsv_params_ref, roi_pts, sender_state,
         return
     cv2.namedWindow("Vision Realtime")
     cv2.namedWindow("Mask")
-    cv2.createTrackbar("H Min", "Vision Realtime", 0,   179, lambda x: None)
-    cv2.createTrackbar("H Max", "Vision Realtime", 179, 179, lambda x: None)
-    cv2.createTrackbar("S Min", "Vision Realtime", 0,   255, lambda x: None)
-    cv2.createTrackbar("S Max", "Vision Realtime", 60,  255, lambda x: None)
-    cv2.createTrackbar("V Min", "Vision Realtime", 140, 255, lambda x: None)
-    cv2.createTrackbar("V Max", "Vision Realtime", 255, 255, lambda x: None)
+    # Seed the trackbars from the persisted HSV (main seeds hsv_params_ref via
+    # load_hsv), so live tuning starts from the saved calibration, not a constant.
+    h0, h1, s0, s1, v0, v1 = hsv_params_ref[0]
+    cv2.createTrackbar("H Min", "Vision Realtime", h0, 179, lambda x: None)
+    cv2.createTrackbar("H Max", "Vision Realtime", h1, 179, lambda x: None)
+    cv2.createTrackbar("S Min", "Vision Realtime", s0, 255, lambda x: None)
+    cv2.createTrackbar("S Max", "Vision Realtime", s1, 255, lambda x: None)
+    cv2.createTrackbar("V Min", "Vision Realtime", v0, 255, lambda x: None)
+    cv2.createTrackbar("V Max", "Vision Realtime", v1, 255, lambda x: None)
 
     blank = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
     cv2.putText(blank, "Dang khoi dong...", (40, CAM_H // 2),
@@ -51,8 +56,11 @@ def thread_display(display_queue, hsv_params_ref, roi_pts, sender_state,
             payload = display_queue.get(timeout=0.05)
         except queue.Empty:
             cv2.imshow("Vision Realtime", blank)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
                 stop_event.set()
+            elif key == ord('s'):
+                save_hsv(hsv_params_ref[0])
             continue
 
         frame   = payload["frame"]
@@ -119,15 +127,18 @@ def thread_display(display_queue, hsv_params_ref, roi_pts, sender_state,
         net_txt    = "MOVING..." if moving else "READY"
 
         cv2.putText(display,
-                    f"{fps_text}  {belt_text}  |  {net_txt}  T_r={t_robot_ms}ms  Q:{queue_size}/{PICK_QUEUE_MAX}  Q=Thoat",
+                    f"{fps_text}  {belt_text}  |  {net_txt}  T_r={t_robot_ms}ms  Q:{queue_size}/{PICK_QUEUE_MAX}  S=LuuHSV Q=Thoat",
                     (10, 680),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, net_col, 2)
 
         cv2.imshow("Vision Realtime", display)
         cv2.imshow("Mask", cv2.resize(mask, (640, 360)))
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             stop_event.set()
+        elif key == ord('s'):
+            save_hsv(hsv_params_ref[0])
 
     cv2.destroyAllWindows()
     print("[DISPLAY] Dung")

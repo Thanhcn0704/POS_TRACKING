@@ -22,7 +22,7 @@ from vision_pi5.config import (
 from vision_pi5.comms.robot_link import RobotLink
 from vision_pi5.hardware import uart_comm
 from vision_pi5.hardware.camera import (
-    thread_capture, load_calibration, build_roi_mask, CalibrationError,
+    thread_capture, load_calibration, build_roi_mask, CalibrationError, load_hsv,
 )
 from vision_pi5.pipeline.detect_worker import thread_detect
 from vision_pi5.pipeline.sender_worker import thread_sender
@@ -114,7 +114,7 @@ def main():
           f"AREA={AREA_MIN}-{AREA_MAX} SOLIDITY>={SOLIDITY_MIN}")
 
     correction_ref = [(x_scale, x_bias, y_offset)]
-    hsv_params_ref = [(0, 179, 0, 60, 140, 255)]
+    hsv_params_ref = [load_hsv()]      # persisted per-camera HSV (falls back to default)
     roi_mask_ref   = [roi_mask]
 
     frame_queue   = queue.Queue(maxsize=2)

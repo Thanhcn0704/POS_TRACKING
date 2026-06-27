@@ -13,7 +13,10 @@ import queue
 import numpy as np
 import cv2
 
-from vision_pi5.config import CAM_W, CAM_H, CAM_FPS, CAM_FPS_TOLERANCE, HOMO_FILE
+from vision_pi5.config import (
+    CAM_W, CAM_H, CAM_FPS, CAM_FPS_TOLERANCE, HOMO_FILE,
+    HSV_CALIB_FILE, HSV_DEFAULT,
+)
 
 
 class CameraConfigFault(Exception):
@@ -65,6 +68,36 @@ def load_calibration(path=None):
     print(f"[CALIB] Loaded {path} — H(3x3), roi_pts({roi_pts.shape[0]} pts), "
           f"ROI mask {CAM_W}x{CAM_H}.")
     return H, roi_pts, roi_mask
+
+
+def load_hsv(path=None):
+    """Load the persisted HSV threshold (h_min,h_max,s_min,s_max,v_min,v_max).
+
+    Returns HSV_DEFAULT when no calibration exists or it is unreadable. HSV is
+    operator-tunable per camera/lighting, so a missing file is NOT a safety fault
+    (unlike the homography) — it simply falls back to the config default. `path`
+    defaults to config.HSV_CALIB_FILE (override for tests).
+    """
+    path = path or HSV_CALIB_FILE
+    if not path or not os.path.exists(path):
+        return tuple(HSV_DEFAULT)
+    try:
+        d = np.load(path)
+        hsv = tuple(int(v) for v in d["hsv"])
+        if len(hsv) != 6:
+            raise ValueError(f"hsv must hold 6 values, got {len(hsv)}")
+    except Exception as e:                       # corrupt / wrong keys / not an npz
+        print(f"[HSV] calib unreadable ({e!r}) - using default {tuple(HSV_DEFAULT)}")
+        return tuple(HSV_DEFAULT)
+    print(f"[HSV] Loaded {path} - {hsv}")
+    return hsv
+
+
+def save_hsv(hsv, path=None):
+    """Persist the HSV threshold so the next startup (and headless runs) reuse it."""
+    path = path or HSV_CALIB_FILE
+    np.savez(path, hsv=np.array(hsv, dtype=np.int32))
+    print(f"[HSV] Saved {path} - {tuple(int(v) for v in hsv)}")
 
 
 def _apply_config(cap):
