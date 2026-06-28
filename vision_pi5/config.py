@@ -242,7 +242,7 @@ Z_PLACE              = 14.000
 # Each up/down pair shares X,Y -> the place descent is a clean VERTICAL stroke:
 #   circle  T2 up (Z147) / T1 down (Z18)  @ (220.0,  -24.0)
 #   square  T4 up (Z147) / T3 down (Z18)  @ (310.0,   -7.0)
-#   tri     T6 up (Z147) / T5 down (Z18)  @ (265.0, -260.0)
+#   hexagon T6 up (Z147) / T5 down (Z18)  @ (265.0, -260.0)
 T1_X                 = 220.000
 T1_Y                 = -24.000
 
@@ -274,18 +274,20 @@ SHAPE_ASPECT_SQUARE_MIN  = 0.85
 SHAPE_VERTEX_TOLERANCE   = 0.04
 
 # --- Strict multi-feature classifier (vision.shape.classify_shape) ---------- #
-# Accept ONLY circle / square / triangle; everything else -> "unknown" -> REJECT
-# (never enqueued). The primary discriminator is the fill ratio
-#   rect_fill = contour_area / minAreaRect_area
-# whose THEORETICAL values are non-overlapping: triangle = 0.50, circle = pi/4 =
-# 0.785, square = 1.0. Bands leave reject GAPS between them; vertex count
-# (multi-epsilon mode) + circularity + aspect corroborate. All bands are pure
-# geometry (no physical/hardware constant) — tune against the live silhouettes.
+# Accept ONLY circle / square / hexagon; everything else -> "unknown" -> REJECT
+# (never enqueued). Each shape has its own discriminators (all pure geometry, no
+# physical/hardware constant — tune against live silhouettes); bands leave reject
+# GAPS so anomalies (triangle, pentagon, heptagon, ...) fall through to "unknown":
+#   circle  : min-enclosing-circle fill >= 0.88 + circularity + rect_fill ~0.785
+#   square  : vertices == 4 + aspect ~1 + rect_fill ~1.0
+#   hexagon : vertices == 6 + enclosing-circle fill ~0.83 (below a disc's 0.88,
+#             above pentagon ~0.76) + near-regular aspect ~0.87
 SHAPE_VERTEX_EPS_SWEEP    = (0.02, 0.03, 0.04)  # approxPolyDP eps fractions; take the modal count
 SHAPE_SOLIDITY_MIN_ACCEPT = 0.90    # all 3 targets are convex -> reject blobs/concave anomalies
 SHAPE_ASPECT_CIRCLE_MIN   = 0.80    # a circle's min-area-rect is near-square
-SHAPE_FILL_TRI_MIN        = 0.38    # triangle fill band  ~0.50
-SHAPE_FILL_TRI_MAX        = 0.62
+SHAPE_HEX_ENCLOSE_MIN     = 0.78    # hexagon enclosing-circle fill band ~0.83 (excludes
+SHAPE_HEX_ENCLOSE_MAX     = 0.86    #   pentagon 0.76 below + circle 0.88+ above -> reject gaps)
+SHAPE_ASPECT_HEX_MIN      = 0.78    # a regular hexagon's min-area-rect aspect ~0.87
 SHAPE_FILL_CIRCLE_MIN     = 0.68    # circle   fill band  ~0.785   (gap 0.62-0.68 -> reject)
 SHAPE_FILL_CIRCLE_MAX     = 0.86
 SHAPE_FILL_SQUARE_MIN     = 0.88    # square   fill band  ~1.0      (gap 0.86-0.88 -> reject)
@@ -304,7 +306,7 @@ SHAPE_VOTE_MIN_CONFIDENCE = 0.60
 SHAPE_CODE = {
     "circle":   1,
     "square":   2,
-    "triangle": 3,
+    "hexagon":  3,
 }
 SHAPE_CODE_DEFAULT = 0
 
@@ -312,7 +314,6 @@ SHAPE_COLORS = {
     "circle":        (255, 180,   0),
     "square":        (  0, 220, 255),
     "rectangle":     (  0, 160, 255),
-    "triangle":      (200,   0, 255),
     "pentagon":      (255,  80, 200),
     "hexagon":       ( 80, 255, 120),
     "quadrilateral": (180, 180,   0),
@@ -323,6 +324,6 @@ SHAPE_COLORS = {
 PLACE_LABEL = {
     1: "T2->T1->T2  (circle)",
     2: "T4->T3->T4  (square)",
-    3: "T6->T5->T6  (triangle)",
-    0: "T6->T5->T6  (default/triangle)",
+    3: "T6->T5->T6  (hexagon)",
+    0: "T6->T5->T6  (default/hexagon)",
 }

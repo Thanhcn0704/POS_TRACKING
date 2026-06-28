@@ -108,10 +108,10 @@ def test_shape_majority_vote_survives_one_noisy_frame():
     trk = MultiObjectTracker()
     trk.update([_det(0.0, -200.0, "circle")],   0.0, 0.0,            0)  # vote circle
     trk.update([_det(0.0, -200.0, "circle")],   0.0, 0.04,           0)  # vote circle
-    trk.update([_det(0.0, -200.0, "triangle")], 0.0, 0.08,           0)  # noise
+    trk.update([_det(0.0, -200.0, "hexagon")], 0.0, 0.08,           0)  # noise
     entries, _ = trk.update([_det(0.0, -200.0, "circle")], 0.0, AFTER_STABLE, 0)
     assert len(entries) == 1
-    assert entries[0]["shape"] == "circle"   # 3 circle vs 1 triangle
+    assert entries[0]["shape"] == "circle"   # 3 circle vs 1 hexagon
 
 
 def test_unknown_majority_is_rejected_not_enqueued():
@@ -130,7 +130,7 @@ def test_low_confidence_split_is_rejected():
     trk = MultiObjectTracker()
     trk.update([_det(0.0, -200.0, "circle")],   0.0, 0.00, 0)
     trk.update([_det(0.0, -200.0, "square")],   0.0, 0.04, 0)
-    entries, _ = trk.update([_det(0.0, -200.0, "triangle")], 0.0, AFTER_STABLE, 0)
+    entries, _ = trk.update([_det(0.0, -200.0, "hexagon")], 0.0, AFTER_STABLE, 0)
     assert entries == []                       # 1/3 each -> no winner >= 60%
 
 

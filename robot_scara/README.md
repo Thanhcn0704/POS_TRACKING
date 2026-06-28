@@ -58,7 +58,7 @@ ID,CMD,X,Y,Z,C,SHP\r
 | Y     | real (3 dp) | mm |
 | Z     | real (3 dp) | mm — pick depth for cmd 2; lift height for cmd 1 |
 | C     | real (3 dp) | deg — tool roll |
-| SHP   | int  | 1 circle, 2 square, 3 triangle, 0 default |
+| SHP   | int  | 1 circle, 2 square, 3 hexagon, 0 default |
 
 Example: `1,2,0.000,-250.000,28.000,89.167,2\r`. Read in one statement:
 `INPUT IP1, ID, CMD, X, Y, Z, C, SHP`. **No `STX`/`ETX`, no per-field CR.**

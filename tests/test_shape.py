@@ -1,8 +1,9 @@
-"""Unit tests for vision.shape.classify_shape (strict circle/square/triangle).
+"""Unit tests for vision.shape.classify_shape (strict circle/square/hexagon).
 
 Synthetic contours only — no camera. Asserts the three targets are accepted and
-that anomalous shapes (rectangle, pentagon, concave blob) are strictly REJECTED
-as "unknown" rather than mislabelled.
+that anomalous shapes (triangle, rectangle, pentagon, heptagon, concave blob) are
+strictly REJECTED as "unknown" rather than mislabelled. Triangle is now a REJECT
+(it was replaced by hexagon as the third target).
 
 Run:
     py -V:ContinuumAnalytics/Anaconda39-64 tests/test_shape.py
@@ -39,12 +40,20 @@ def _rectangle():
     return _contour([(20, 20), (220, 20), (220, 70), (20, 70)])   # 4:1, not a square
 
 
+def _hexagon():
+    return _regular_polygon(6, r=80.0)
+
+
 def _circle():
     return _regular_polygon(72, r=60.0)   # dense -> a disc
 
 
 def _pentagon():
     return _regular_polygon(5, r=80.0)
+
+
+def _heptagon():
+    return _regular_polygon(7, r=80.0)
 
 
 def _concave_blob():
@@ -56,12 +65,17 @@ def test_square_accepted():
     assert classify_shape(_square())[0] == "square"
 
 
-def test_triangle_accepted():
-    assert classify_shape(_triangle())[0] == "triangle"
+def test_hexagon_accepted():
+    assert classify_shape(_hexagon())[0] == "hexagon"
 
 
 def test_circle_accepted():
     assert classify_shape(_circle())[0] == "circle"
+
+
+def test_triangle_rejected():
+    # Triangle was removed as a target -> now strictly REJECTED.
+    assert classify_shape(_triangle())[0] == "unknown"
 
 
 def test_rectangle_rejected():
@@ -70,6 +84,11 @@ def test_rectangle_rejected():
 
 def test_pentagon_rejected():
     assert classify_shape(_pentagon())[0] == "unknown"
+
+
+def test_heptagon_rejected():
+    # Adjacent polygon to the hexagon target -> must NOT leak through as hexagon.
+    assert classify_shape(_heptagon())[0] == "unknown"
 
 
 def test_concave_blob_rejected():

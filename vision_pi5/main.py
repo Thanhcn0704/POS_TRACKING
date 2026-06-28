@@ -43,7 +43,7 @@ def main():
     print(f"[SEQ] Pick Z={Z_PICK} | Safe Z={Z_SAFE}")
     print(f"[ROUTE] circle=1->{PLACE_LABEL[1]}  "
           f"square=2->{PLACE_LABEL[2]}  "
-          f"triangle=3->{PLACE_LABEL[3]}")
+          f"hexagon=3->{PLACE_LABEL[3]}")
 
     cam_id = 0
     sock   = None

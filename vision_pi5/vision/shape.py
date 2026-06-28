@@ -1,15 +1,16 @@
-"""Strict shape classification — circle / square / triangle, else REJECT.
+"""Strict shape classification — circle / square / hexagon, else REJECT.
 
 classify_shape(contour) -> (shape_name, circularity, vertices) where shape_name
-is strictly one of {"circle","square","triangle","unknown"}. Anything that is
+is strictly one of {"circle","square","hexagon","unknown"}. Anything that is
 not unambiguously one of the three targets returns "unknown" (the pipeline never
-enqueues an "unknown"), so anomalous/ambiguous silhouettes are rejected rather
-than mislabelled into a default bin.
+enqueues an "unknown"), so anomalous/ambiguous silhouettes (including triangles,
+pentagons, heptagons) are rejected rather than mislabelled into a default bin.
 
-Primary discriminator is the fill ratio rect_fill = area / minAreaRect_area,
-whose theoretical values are non-overlapping (triangle 0.50, circle pi/4 0.785,
-square 1.0); vertex count (multi-epsilon mode), circularity, aspect and solidity
-corroborate. Thresholds live in config — all pure geometry, no physical constant.
+Each target has its own multi-feature gate (vertex count via multi-epsilon mode,
+min-enclosing-circle fill, rect fill, circularity, aspect, solidity), with reject
+GAPS between them. A hexagon is keyed on vertices==6 (stable 120-deg corners) +
+an enclosing-circle fill ~0.83 that sits below a disc's 0.88 and above pentagon's
+0.76. Thresholds live in config — all pure geometry, no physical constant.
 """
 
 import numpy as np
@@ -18,7 +19,7 @@ import cv2
 from vision_pi5.config import (
     SHAPE_CIRCULARITY_CIRCLE, SHAPE_ASPECT_SQUARE_MIN, SHAPE_ASPECT_CIRCLE_MIN,
     SHAPE_VERTEX_EPS_SWEEP, SHAPE_SOLIDITY_MIN_ACCEPT,
-    SHAPE_FILL_TRI_MIN, SHAPE_FILL_TRI_MAX,
+    SHAPE_HEX_ENCLOSE_MIN, SHAPE_HEX_ENCLOSE_MAX, SHAPE_ASPECT_HEX_MIN,
     SHAPE_FILL_CIRCLE_MIN, SHAPE_FILL_CIRCLE_MAX, SHAPE_FILL_SQUARE_MIN,
     SHAPE_CIRCLE_ENCLOSE_MIN,
 )
@@ -26,7 +27,7 @@ from vision_pi5.config import (
 
 def _modal_vertex_count(contour, perimeter):
     """Vertex count robust to a single epsilon: the modal approxPolyDP count over
-    the epsilon sweep (a triangle reads 3 and a square 4 stably; a circle reads
+    the epsilon sweep (a hexagon reads 6 and a square 4 stably; a circle reads
     high/variable, so it is identified by fill+circularity, not this count)."""
     counts = {}
     for frac in SHAPE_VERTEX_EPS_SWEEP:
@@ -78,10 +79,14 @@ def classify_shape(contour):
             and rect_fill >= SHAPE_FILL_SQUARE_MIN):
         return "square", circularity, vertices
 
-    # TRIANGLE — exactly 3 corners, fill ~ 0.5.
-    if (vertices == 3
-            and SHAPE_FILL_TRI_MIN <= rect_fill <= SHAPE_FILL_TRI_MAX):
-        return "triangle", circularity, vertices
+    # HEXAGON — exactly 6 corners (stable 120-deg), fills its enclosing circle ~0.83
+    # (below a disc's 0.88, above pentagon's 0.76 -> separates it from both), with a
+    # near-regular bounding box. enclose_fill was computed in the CIRCLE block above.
+    if (vertices == 6
+            and SHAPE_HEX_ENCLOSE_MIN <= enclose_fill <= SHAPE_HEX_ENCLOSE_MAX
+            and aspect >= SHAPE_ASPECT_HEX_MIN):
+        return "hexagon", circularity, vertices
 
-    # Rectangle, polygon (>=5), or any band-gap / corroboration miss -> rejected.
+    # Triangle, rectangle, pentagon, heptagon, or any band-gap / corroboration miss
+    # -> rejected.
     return "unknown", circularity, vertices

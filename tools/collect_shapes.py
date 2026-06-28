@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Shape dataset / template collector — register real circle/square/triangle samples.
+"""Shape dataset / template collector — register real circle/square/hexagon samples.
 
 WHY THIS EXISTS
     The live pipeline classifies with vision/shape.classify_shape, whose accept
     bands (rect_fill, enclose_fill, solidity, modal-vertex counts) are THEORETICAL
-    (perfect circle=pi/4, square=1.0, triangle=0.5). Real camera silhouettes drift
+    (perfect circle enclose~1.0, square fill=1.0, hexagon enclose~0.83). Real camera
+    silhouettes drift
     from theory (perspective, rounded corners, motion blur, HSV-mask speckle), so a
     track can vote "unknown" every frame -> tracker REJECTS it -> the object is
     skipped and never picked. Per the empirical-calibration guardrail we do NOT
@@ -19,7 +20,7 @@ WHAT IT DOES
     classifier's current verdict, so you SEE why a shape is rejected.
 
     Manual capture order (the user places one object at a time):
-        1. Circle (Tron) -> 2. Square (Vuong) -> 3. Triangle (Tam giac)
+        1. Circle (Tron) -> 2. Square (Vuong) -> 3. Hexagon (Luc giac)
 
     Each capture writes into dataset/<class>/ :
         <class>_<NNN>.png          cropped BGR sample (the reference image)
@@ -30,7 +31,7 @@ WHAT IT DOES
 
 CONTROLS
     SPACE or C  capture the highlighted (largest) object into the CURRENT class
-    N           advance to the next class   (circle -> square -> triangle)
+    N           advance to the next class   (circle -> square -> hexagon)
     B           go back to the previous class
     S           save the current HSV to the pipeline calibration (camera.save_hsv)
     H           reset HSV trackbars to the pipeline default
@@ -70,8 +71,8 @@ from vision_pi5.hardware.camera import (
 from vision_pi5.vision.shape import classify_shape, _modal_vertex_count
 
 # Ordered capture sequence + display names (the "sequential state index").
-CLASSES = ("circle", "square", "triangle")
-CLASS_VN = {"circle": "Tron", "square": "Vuong", "triangle": "Tam giac"}
+CLASSES = ("circle", "square", "hexagon")
+CLASS_VN = {"circle": "Tron", "square": "Vuong", "hexagon": "Luc giac"}
 
 # Seeded from the live pipeline default (vision_pi5/main.py: hsv_params_ref) so the
 # mask here matches what detect_objects() produces. Adjustable live via trackbars.
@@ -336,7 +337,7 @@ def print_summary(session):
 #  Main loop
 # --------------------------------------------------------------------------- #
 def main():
-    ap = argparse.ArgumentParser(description="Collect circle/square/triangle samples")
+    ap = argparse.ArgumentParser(description="Collect circle/square/hexagon samples")
     ap.add_argument("--cam", type=int, default=0, help="camera id (default 0)")
     ap.add_argument("--no-roi", action="store_true",
                     help="ignore the saved ROI mask (use the full frame)")
