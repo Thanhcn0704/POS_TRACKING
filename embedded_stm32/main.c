@@ -12,8 +12,6 @@
   *      lenh tu Pi.
   *    - Relay2 (PB9, hut chan khong) nhan lenh BAT/TAT tu Pi qua byte
   *      r1 trong goi UART RX (khop voi uart_receiver.send_relay()).
-  *    - Motor bang tai (PE11/PE12) chay LIEN TUC 1 chieu ngay sau khoi
-  *      dong, KHONG con nhan lenh Forward/Stop/Reset tu Pi qua UART.
   *
   *  >>> HEARTBEAT (Feature: UART communication status indicator) <<<
   *    - Them khung PING 0xDD (Pi -> STM32) va ACK 0xCD/0xCE (STM32 -> Pi).
@@ -21,7 +19,7 @@
   *      khung hop le (0xCC relay HOAC 0xDD ping) tu Pi.
   *    - Khi nhan 0xDD: toggle LED + tra loi ACK (gui o main context).
   *    - TAT CA cac thay doi heartbeat duoc danh dau bang "(HB)".
-  *      Hanh vi 0xAA/0xCC/relay/motor/encoder GIU NGUYEN.
+  *      Hanh vi 0xAA/0xCC/relay/encoder GIU NGUYEN.
   *
   *  De thay doi GPIO hoac timing:
   *    -> Chi chinh file config.h, KHONG sua file nay.
@@ -83,7 +81,6 @@ static void SysTick_Init(void);
 static void USART2_Init(void);
 static void Uart_Send_Data(const uint8_t *data, uint16_t len);
 static void Relay_Set(GPIO_TypeDef *port, uint8_t pin, uint8_t on);
-static void Motor_Forward(uint16_t duty);
 static void Heartbeat_LED_Toggle(void);          /* HB */
 /* USER CODE END PFP */
 
@@ -114,15 +111,6 @@ static void Relay_Set(GPIO_TypeDef *port, uint8_t pin, uint8_t on)
 
     if (port == RELAY1_GPIO && pin == RELAY1_PIN) relay1_state = on ? 1U : 0U;
     if (port == RELAY2_GPIO && pin == RELAY2_PIN) relay2_state = on ? 1U : 0U;
-}
-
-/* ------------------------------------------------------------------
- * Motor_Forward — bang tai chay lien tuc 1 chieu (PE11/PE12)
- * ------------------------------------------------------------------ */
-static void Motor_Forward(uint16_t duty)
-{
-    (void)duty;
-    MOTOR_GPIO->BSRR = (1U << MOTOR_IN1_PIN) | (1U << (MOTOR_IN2_PIN + 16U));
 }
 
 /* ------------------------------------------------------------------
@@ -306,8 +294,6 @@ int main(void)
     Relay_Set(RELAY1_GPIO, RELAY1_PIN, 0);
     Relay_Set(RELAY2_GPIO, RELAY2_PIN, 0);
 
-    Motor_Forward(MOTOR_DUTY);
-
     uint32_t last_cnt        = 0;
     uint32_t last_sample_tick = sys_tick_ms;
     uint32_t relay1_on_ms     = 0;
@@ -421,21 +407,13 @@ void SystemClock_Config(void)
 }
 
 /* ============================================================
- * GPIO INIT — Motor + Relay1 + Relay2 + Heartbeat LED
+ * GPIO INIT — Relay1 + Relay2 + Heartbeat LED
  * ============================================================ */
 static void MX_GPIO_Init(void)
 {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOEEN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
     RCC->AHB1ENR |= HEARTBEAT_LED_AHB1EN;                         /* HB: clock port LED */
     __DSB();
-
-    /* Motor IN1/IN2 (PE11/PE12) */
-    GPIOE->MODER   &= ~(GPIO_MODER_MODER11 | GPIO_MODER_MODER12);
-    GPIOE->MODER   |=  (GPIO_MODER_MODER11_0 | GPIO_MODER_MODER12_0);
-    GPIOE->OTYPER  &= ~((1U << 11U) | (1U << 12U));
-    GPIOE->OSPEEDR |=  (GPIO_OSPEEDR_OSPEED11 | GPIO_OSPEEDR_OSPEED12);
-    GPIOE->PUPDR   &= ~(GPIO_PUPDR_PUPD11 | GPIO_PUPDR_PUPD12);
-    GPIOE->BSRR     =  GPIO_BSRR_BR_11 | GPIO_BSRR_BR_12;
 
     /* Relay1 (PB8) — active-low, open-drain vao dien tro keo 5V cua board.
      * Pre-set muc OFF (hi-Z) TRUOC khi bat output buffer: ODR reset = 0,

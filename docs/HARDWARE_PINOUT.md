@@ -13,13 +13,13 @@
 | Node | Part | Role | Logic level |
 |------|------|------|-------------|
 | U1 | Raspberry Pi 5 | Vision + math + master scheduler | 3.3 V `[V]` (NOT 5 V tolerant) |
-| U2 | STM32F407VET6 | Real-time I/O: encoder capture, relays, motor, heartbeat | 3.3 V `[V]` |
+| U2 | STM32F407VET6 | Real-time I/O: encoder capture, relays, heartbeat | 3.3 V `[V]` |
 | U3 | SCARA controller (Toshiba/Shibaura TSL3000 / THL400) | Motion execution (SCOL) | Ethernet (TCP) `[V]` |
 | U4 | USB camera | 1280x720 @ 60 FPS MJPG `[V]` | USB |
 | ENC1 | Quadrature encoder (conveyor) | Belt position/speed | `[TBD]` (5 V? 12 V? 24 V? line-driver/OC/push-pull) |
 | K1 | Relay — feeder cylinder | Part pusher, autonomous | coil V `[TBD]` |
 | K2 | Relay — vacuum valve | Suction gripper (Pi-commanded) | coil V `[TBD]` |
-| M1 | Conveyor DC motor (via L298N `[V]`) | Belt drive, continuous 1-direction | motor V `[TBD]` |
+| M1 | Conveyor DC motor (external/standalone drive — **not** STM32-controlled) | Belt drive; STM32 only **reads** its motion via ENC1 | motor V `[TBD]` |
 | LED1 | Heartbeat indicator LED | UART link-alive | 3.3 V `[V]` |
 
 ---
@@ -38,8 +38,9 @@
                  PA0/PA1 ◄──[level shift?]── ENC1 (A/B quadrature)  [TBD level]
                  PB8 ──►[driver+flyback]──► K1 feeder cylinder valve
                  PB9 ──►[driver+flyback]──► K2 vacuum valve
-                 PE11/PE12 ──► [L298N] ──► M1 conveyor motor
                  PA6 ──►[R]──► LED1
+
+ [M1 conveyor motor]──(external drive, NOT STM32)──► belt ──► ENC1 ──► U2.PA0/PA1
 ```
 
 Note: the **vacuum cup is on the SCARA arm**, but its valve (K2) is switched by **U2 (STM32)**
@@ -58,7 +59,7 @@ prints `REL` to tell the Pi when to drop. `[V]`
 | Pi 5 supply | 5 V / 5 A (USB-C PD) | — | `[TBD]` integrator |
 | STM32 board supply | — | — | `[TBD]` (typ. 5 V → 3.3 V) |
 | Relay coil rail | — | — | `[TBD]` (e.g. 5 V / 12 V / 24 V) |
-| Motor rail (L298N VS) | — | — | `[TBD]` (L298N up to ~46 V) |
+| Conveyor motor rail | — | — | `[TBD]` (external drive — **not** STM32-controlled) |
 | Encoder rail | — | — | `[TBD]` |
 
 **Grounding:** all nodes MUST share a common ground (star topology recommended). The Pi↔STM32
@@ -115,14 +116,13 @@ draws near the port limit. `[TBD]` camera model/power.
 | **PA6** | GPIO | OUT | HB_LED | Heartbeat LED (toggles on valid 0xCC/0xDD) `[V]` |
 | **PB8** | GPIO (FT, 5 V-tol) | OUT (open-drain) | RELAY1 | Feeder cylinder, **active LOW**, autonomous 3 s / 100 ms ON `[V]` |
 | **PB9** | GPIO (FT, 5 V-tol) | OUT (open-drain) | RELAY2 | Vacuum suction, **active LOW**, Pi-commanded via 0xCC r1 `[V]` |
-| **PE11**| GPIO | OUT | MOTOR_IN1 | L298N IN1 `[V]` |
-| **PE12**| GPIO | OUT | MOTOR_IN2 | L298N IN2 `[V]` |
 
 Encoder: TIM2 Encoder Mode 3 (x4), `ENCODER_PPR = 32308` pulses/rev `[V]`. Relay polarity:
 `RELAY_ACTIVE_HIGH = 0` → **active LOW, open-drain** (`RELAY_OPEN_DRAIN = 1`), low slew `[V]`.
 PB8/PB9 are **FT (5 V-tolerant)** I/O (DS8626 Table 10), so the open-drain OFF state may float to the
 board's 5 V pull-up without back-feeding the 3.3 V rail — **valid only if that pull-up is ≤ 5 V**.
-Motor: jumper 100% (no PWM), runs continuous one direction `[V]`.
+Conveyor motor: **not driven by the STM32** — the belt is turned by an external/standalone drive;
+the firmware only **measures** belt motion through ENC1 (PA0/PA1). PE11/PE12 are unused/free `[V]`.
 
 ---
 
@@ -143,14 +143,14 @@ Motor: jumper 100% (no PWM), runs continuous one direction `[V]`.
 
 ## 8. ACTUATOR OUTPUTS
 
-All three are inductive / higher-power loads — the 3.3 V STM32 GPIO CANNOT drive them
-directly. Each needs a driver stage with flyback protection `[TBD device choice]`.
+Both relay outputs (K1, K2) are inductive loads — the 3.3 V STM32 GPIO CANNOT drive them
+directly. Each needs a driver stage with flyback protection `[TBD device choice]`. The conveyor
+motor (M1) is **not** a STM32 output — it is driven externally and only sensed via ENC1.
 
 | Output | MCU pin | Drive stage `[TBD]` | Load | Behaviour `[V]` |
 |--------|---------|---------------------|------|-----------------|
 | K1 feeder valve | PB8 (active LOW, open-drain) | opto-isolated relay module (IN pulled to **≤5 V** on board) **or** logic-level N-MOSFET/transistor + **flyback diode** across coil | feeder cylinder solenoid | autonomous: ON every 3 s for 100 ms |
 | K2 vacuum valve | PB9 (active LOW, open-drain) | same | vacuum generator/valve | Pi-commanded; idempotent 0xCC sent ×3 |
-| M1 conveyor motor | PE11, PE12 | **L298N** H-bridge `[V named in firmware]` (ENA jumpered 100 %) | DC gear motor | continuous, one direction |
 | LED1 heartbeat | PA6 | series resistor (~330 Ω–1 kΩ) | indicator LED | toggles on each valid Pi frame |
 
 Driver notes `[TBD/best-practice]`:
@@ -162,9 +162,10 @@ Driver notes `[TBD/best-practice]`:
   No internal pull-up is enabled (it would only reach 3.3 V and fight the board's 5 V pull-up).
 - **Flyback diode** (e.g. 1N4007) across every relay/solenoid coil; snubber on contacts switching
   inductive AC.
-- L298N: IN1/IN2 are TTL (≈2.3 V high threshold) so 3.3 V drive is generally fine `[verify]`;
-  L298N logic VSS = 5 V, VS = motor rail; include the H-bridge flyback diodes (or use internal/
-  module-provided). Keep motor rail star-grounded separately back to the common point.
+- **Conveyor motor (M1)**: driven by an external/standalone controller — **outside the scope of this
+  firmware**. The STM32 has no motor-drive pins; it only reads belt motion through ENC1 (PA0/PA1).
+  If the external drive shares the supply, keep its high-current rail star-grounded back to the
+  common point and bulk-decoupled so switching transients do not corrupt the UART or encoder lines.
 
 ---
 
@@ -174,7 +175,6 @@ Driver notes `[TBD/best-practice]`:
 |-----------|----------|--------|
 | Pi 5 ↔ STM32 UART | **NO** `[V]` | both 3.3 V — direct, cross TX/RX, common GND |
 | STM32 ↔ relays K1/K2 | driver stage (not "shifter") | 3.3 V GPIO → opto/MOSFET → coil rail; flyback required |
-| STM32 ↔ L298N | **NO** (verify TTL threshold) | 3.3 V → L298N TTL inputs |
 | STM32 ↔ encoder | **CONDITIONAL** `[TBD]` | depends on encoder voltage (see §7) |
 | Pi ↔ SCARA | NO | Ethernet |
 | Pi ↔ camera | NO | USB |
@@ -186,12 +186,12 @@ Driver notes `[TBD/best-practice]`:
 1. **Common ground** between Pi 5, STM32, and all driver grounds — star point. UART fails otherwise.
 2. **3.3 V everywhere on logic** — Pi 5 is NOT 5 V tolerant; never feed 5 V into a Pi GPIO.
 3. **Flyback diodes** on every inductive load (relay coils, solenoids); decoupling 100 nF at each
-   IC supply pin + bulk caps on the relay/motor rails (switching transients corrupt UART — this is
+   IC supply pin + bulk caps on the relay rail (switching transients corrupt UART — this is
    why the firmware/Pi already harden against dropped frames).
 4. **Firmware is FROZEN** — the STM32 pin assignments above are fixed in `config.h`; a PCB must
-   match these exact pins (PA0/PA1, PA2/PA3, PA6, PB8/PB9, PE11/PE12). Changing a pin = editing
+   match these exact pins (PA0/PA1, PA2/PA3, PA6, PB8/PB9). Changing a pin = editing
    `config.h` and re-flashing.
 5. **Pi 5 UART** — confirm `/dev/ttyAMA0` ↔ GPIO14/15 in the Pi 5 device tree before layout.
-6. Items marked `[TBD]` (rail voltages, encoder electrical, relay/motor part numbers, connectors)
+6. Items marked `[TBD]` (rail voltages, encoder electrical, relay part numbers, connectors)
    must be filled in by the integrator from the actual BOM — they are NOT defined by the firmware
    and must not be guessed.

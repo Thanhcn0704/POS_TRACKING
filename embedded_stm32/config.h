@@ -43,16 +43,7 @@
 #define RELAY2_PIN          9U
 
 /* ============================================================
- * 4. MOTOR L298N — PE11/PE12, jumper 100%, khong dung PWM
- * ============================================================ */
-
-#define MOTOR_GPIO          GPIOE
-#define MOTOR_IN1_PIN       11U
-#define MOTOR_IN2_PIN       12U
-#define MOTOR_DUTY          0U
-
-/* ============================================================
- * 5. UART — Giao tiep voi RPi5
+ * 4. UART — Giao tiep voi RPi5
  * ============================================================ */
 
 #define UART_PERIPH         USART2
@@ -66,7 +57,7 @@
 #define UART_RX_BUF_SIZE    32U
 
 /* ============================================================
- * 6. LOGIC MUC RELAY — Active LOW (open-drain, board keo len 5V)
+ * 5. LOGIC MUC RELAY — Active LOW (open-drain, board keo len 5V)
  * ============================================================
  *
  *  Module relay opto-cach-ly pho bien la ACTIVE LOW: chan IN da duoc
@@ -109,7 +100,7 @@
 #define RELAY_OPEN_DRAIN    1
 
 /* ============================================================
- * 7. SYSTEM CLOCK — HSI 16MHz, khong dung PLL
+ * 6. SYSTEM CLOCK — HSI 16MHz, khong dung PLL
  * ============================================================
  *
  *  SysTick IRQ moi 1ms:
@@ -119,13 +110,13 @@
 #define SYSTICK_LOAD        (HCLK_HZ / 1000U - 1U)
 
 /* ============================================================
- * 8. ENCODER SAMPLING
+ * 7. ENCODER SAMPLING
  * ============================================================ */
 
 #define ENC_SAMPLE_MS       100U
 
 /* ============================================================
- * 9. HEARTBEAT / HANDSHAKE  (Feature: UART communication status)
+ * 8. HEARTBEAT / HANDSHAKE  (Feature: UART communication status)
  * ============================================================
  *
  *  LED bao trang thai link UART. No DOI TRANG THAI moi khi nhan
@@ -137,7 +128,7 @@
  *  >>> CHON CHAN LED THEO BOARD CUA BAN <<<
  *  Mac dinh PA6 (chan trong; clock GPIOA da bat san cho encoder/uart).
  *  Tranh cac chan da dung:
- *    PA0,PA1 (encoder) | PA2,PA3 (uart) | PB8,PB9 (relay) | PE11,PE12 (motor)
+ *    PA0,PA1 (encoder) | PA2,PA3 (uart) | PB8,PB9 (relay)
  *  Vi du LED on-board pho bien khac: PC13, PE0... -> doi 3 #define duoi.
  */
 #define HEARTBEAT_LED_GPIO    GPIOA
