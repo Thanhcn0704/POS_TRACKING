@@ -126,7 +126,7 @@ and `WAIT` pre-positioning still uses the live rate (fine — it only parks the 
 | Vacuum (**Relay 2 / PB9**) | `sender_worker` + `uart_comm.send_relay` | **event-driven (closed-loop)**: the SCOL program PRINTs `"AT_PICK"` at pick Z → `robot_link` fires `on_pick` → `send_relay(True)`; `"REL"` at discharge → `on_release` → `send_relay(False)` (+ a belt-and-suspenders OFF after DONE). No dead-reckoning timer. Pi sends `0xCC r1` ×3 (idempotent); STM32 drives **PB9 active-low, open-drain** (see `HARDWARE_PINOUT.md`) |
 | Feeder (**Relay 1 / PB8**) | **STM32 autonomous** | fires every 3.0 s for 100 ms on STM32's own timer — no Pi involvement; PB8 active-low, open-drain |
 
-**Retry/fault:** `send_verified` retries up to `ACK_RETRIES=2` on **pre-commit** failures (timeout / bad ACK → abort gate + `buffreset`); once GO is sent the move is committed (a later failure is `failed`, never re-sent — robot is never double-commanded).
+**Retry/fault:** `send_verified` retries up to `ACK_RETRIES=2` on **pre-commit** failures (timeout / bad ACK → abort gate + `buffreset`; a pre-commit **socket drop** → `RobotLink.reconnect()` with capped backoff, then retry the same object); once GO is sent the move is committed (a later failure is `failed`, never re-sent — robot is never double-commanded).
 
 ---
 
@@ -164,11 +164,11 @@ Position is now encoder displacement and the intercept is the fixed point where 
 **B4 — Inconsistent telemetry snapshot (RACE, LOW — partially mitigated).**
 An atomic `get_motor_snapshot() -> (speed, ticks, t)` now exists, but the sender still reads `get_absolute_pulse_count()` and `get_pulse_frequency_hz()` as two separate calls. The window is small (both under `_data_lock`) and position is encoder-based; switching the sender to the single snapshot getter would close it fully.
 
-**B5 — Post-REQ send failure freezes the robot (ZERO-FREEZE HOLE).**
-In `_transact`, if `sock.sendall` in `_send_coord_frame` (or the gate send) raises after the robot already printed `REQ`, the handler returns `"failed"` **without delivering any bytes**. The robot is now blocked in `INPUT IP1, ID,...` **forever** (no SCOL timeout). The freeze contract is only honoured on the happy/abort paths, not on a mid-exchange socket error.
+**B5 — Post-REQ send failure freezes the robot [RESOLVED].**
+`_transact` now tracks a `committed` flag and maps a **pre-commit** socket error (REQ wait / frame send / ACK / gate) to `"reconnect"` instead of a silent `"failed"`. `send_verified` then re-establishes the link and retries the same object — and a fresh TCP connect resets the controller's `IP1` channel, releasing the robot's blocked `INPUT`. *(Hardware caveat: confirm on the THL400 that a fresh Pi connect does release a blocked `INPUT` — controller-specific.)*
 
-**B6 — No TCP reconnection (ZERO-FREEZE HOLE, P5.1).**
-On any `OSError`, the socket is never re-established. After a single drop, every subsequent `_transact` fails and the robot sits frozen on its next `INPUT`. Unacceptable for 24/7 line uptime.
+**B6 — No TCP reconnection [RESOLVED].**
+`RobotLink` owns the endpoint (`ip`/`port`) with `connect()`/`reconnect()` (capped exponential backoff, `stop_event`-interruptible). A dropped/refused link is re-dialled rather than failing every subsequent `_transact`. **Post-commit** drops still return `"failed"` (the robot is already moving — never double-commanded).
 
 **B7 — Vacuum ON-time bounded by the 60 s DONE-wait, not by the pick (SAFETY/LATENCY).**
 `send_relay(False)` runs only **after** `wait_for_signal("DONE")` returns. If the robot hangs, `DONE` waits up to 60 s → the vacuum stays energized for up to a minute. No independent max-on watchdog.
@@ -195,7 +195,7 @@ The old distance-only `is_new_object` + one-contour-per-frame is replaced by `vi
 
 - **R3 — Decouple throughput / admission control (UNBLOCKS PICKS).** Right-size `TRACK_TIMEOUT_S` to the measured ≈16 s transit; estimate robot cycle time and **stop enqueuing** objects the arm provably cannot service before they pass `X_OPT` (so the queue reflects reality instead of expiring). Optionally split the Sender's "decide" from "execute" so decisions keep updating while a move is in flight. (Fixes B1.)
 
-- **R4 — Zero-freeze hardening (RELIABILITY).** (a) In `_transact`, treat **any** failure after `REQ` as "must still satisfy the robot's pending INPUT": if the socket is alive, push a safe record + `ABORT` gate; if dead, go to R5. (b) Add `RobotLink.reconnect()` and a connect-loop in the Sender so a dropped channel is re-established (a fresh TCP connect resets `IP1`, releasing the robot's blocked INPUT). (Fixes B5, B6.) *Plan: Task 10 / P5.1.*
+- **R4 — Zero-freeze hardening (RELIABILITY) [IMPLEMENTED].** `RobotLink` owns `connect()`/`reconnect()` (capped backoff, `stop_event`-aware); `_transact` distinguishes pre-commit (`"reconnect"` → re-dial + retry) from post-commit (`"failed"`, never re-sent); `main.py` lets the link own the socket. Fixes B5, B6. *Residual: the full Sender split (Phase 2) is separate; bench-confirm a fresh connect releases a blocked SCOL `INPUT`.*
 
 - **R5 — Vacuum max-on watchdog + bounded DONE-wait (SAFETY).** Cap `wait_for_signal(done_word)` at a realistic motion budget (not 60 s) so a hung robot is detected fast; arm an independent timer that forces `send_relay(False)` after a hard max-on ceiling regardless of handshake state. (Fixes B7; mitigates B8 detection latency.)
 

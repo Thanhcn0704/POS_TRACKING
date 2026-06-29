@@ -20,6 +20,7 @@ import time
 from vision_pi5.config import (
     Z_SAFE, PLACE_LABEL,
     GATE_GO, GATE_ABORT, ACK_TIMEOUT_S, ACK_RETRIES, CHK_OFFSET,
+    ROBOT_CONNECT_TIMEOUT_S, RECONNECT_BACKOFF_MIN_S, RECONNECT_BACKOFF_MAX_S,
 )
 
 
@@ -43,13 +44,69 @@ class RobotLink:
     responsive to ``stop_event``.
     """
 
-    def __init__(self, sock, stop_event=None):
+    def __init__(self, sock=None, stop_event=None, ip=None, port=None):
         self.sock       = sock
         self.stop_event = stop_event
+        self.ip         = ip          # endpoint for (re)connect; None for an injected socket
+        self.port       = port
         self._rxbuf     = b""
 
     def _stopped(self):
         return self.stop_event is not None and self.stop_event.is_set()
+
+    def _sleep(self, seconds):
+        """Sleep up to `seconds`, waking early if stop_event fires. True if stopped."""
+        if self.stop_event is not None:
+            return self.stop_event.wait(seconds)
+        time.sleep(seconds)
+        return False
+
+    def close(self):
+        """Close the socket and clear the RX buffer (idempotent)."""
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+        self._rxbuf = b""
+
+    def connect(self):
+        """Blocking (re)connect to ip:port with capped exponential backoff.
+
+        Returns True once connected, or False if stop_event fires first. With no
+        ip/port (e.g. an injected test socket) it is a no-op returning True iff a
+        socket is already attached. A fresh TCP connection resets the controller's
+        IP1 channel, releasing any INPUT the robot was blocked on.
+        """
+        if self.ip is None or self.port is None:
+            return self.sock is not None
+        delay = RECONNECT_BACKOFF_MIN_S
+        while not self._stopped():
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(ROBOT_CONNECT_TIMEOUT_S)
+                s.connect((self.ip, self.port))
+                s.settimeout(None)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # 50ms ACK budget
+                self.sock   = s
+                self._rxbuf = b""
+                print("[NET] OK")
+                return True
+            except OSError as e:
+                self.close()
+                print(f"[NET] Thu lai sau {delay:.1f}s ({e})")
+                if self._sleep(delay):
+                    return False                       # stop requested mid-backoff
+                delay = min(delay * 2.0, RECONNECT_BACKOFF_MAX_S)
+        return False
+
+    def reconnect(self):
+        """Tear down a broken link and dial again. False if no endpoint / stopped."""
+        self.close()
+        if self.ip is None or self.port is None:
+            return False
+        return self.connect()
 
     def _next_buffered_line(self):
         """Pop the next complete line (delimited by \\r or \\n) from the buffer.
@@ -195,18 +252,38 @@ class RobotLink:
 
     def _transact(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
                   on_commit=None, on_release=None, on_pick=None):
-        """One verified exchange. Returns 'done' | 'retry' | 'failed'.
+        """One verified exchange. Returns 'done' | 'retry' | 'reconnect' | 'failed'.
 
-        'retry' only for pre-commit failures (no GO sent yet); once GO is sent
-        the robot is moving, so a later failure is 'failed' (never re-sent).
+        'retry'     pre-commit recoverable failure (ACK timeout/bad) — socket alive.
+        'reconnect' pre-commit SOCKET error — caller must re-establish the link
+                    (a fresh connect resets IP1, releasing the robot's INPUT).
+        'failed'    post-commit failure (robot already GO'd -> never re-sent) or a
+                    non-socket robot error (NG/OUT, REQ timeout).
+        'done'      verified completion.
 
         on_pick / on_release fire on the robot's mid-move "AT_PICK" / "REL"
         PRINTs (vacuum ON at pick Z, OFF at discharge). They can only fire after
         GO (the robot never reaches those PRINTs on an aborted/failed transmit).
         """
+        committed = False
         try:
-            if not self.wait_for_signal("REQ"):
-                return "failed"
+            # Wait for REQ inline (NOT via wait_for_signal, which swallows socket
+            # errors) so a drop here surfaces as 'reconnect' instead of a dead skip.
+            req_deadline = time.monotonic() + 60.0
+            while True:
+                line = self.read_line(req_deadline)
+                if line is None:
+                    if not self._stopped():
+                        print("[LOI] Khong nhan duoc REQ trong 60s.")
+                    return "failed"
+                if not line:
+                    continue
+                print(f"[RX] {repr(line)}")
+                if "REQ" in line:
+                    break
+                if "NG" in line or "OUT" in line:
+                    print(f"[LOI] Robot bao loi: {line}")
+                    return "failed"
 
             self._send_coord_frame(cmd_id, cmd, x, y, z, c, shape_code)
             expected = frame_checksum(cmd_id, cmd, x, y, z, c, shape_code)
@@ -228,6 +305,7 @@ class RobotLink:
             if on_commit is not None:
                 on_commit()
             self.send_line(f"{GATE_GO}\r")
+            committed = True            # past here a socket drop is 'failed', not retried
 
             # Wait for completion. Energize the vacuum the INSTANT the robot reports
             # "AT_PICK" (printed at pick Z, WAIT MOTION>=100) and drop it the instant
@@ -259,9 +337,11 @@ class RobotLink:
                     print(f"[LOI] Robot bao loi: {line}")
                     return "failed"
 
-        except OSError as e:
+        except (ConnectionError, OSError) as e:
+            # Pre-commit socket error -> 'reconnect' (re-establish + retry the SAME
+            # object); post-commit -> 'failed' (robot is moving; never double-send).
             print(f"[LOI] Socket: {e}")
-            return "failed"
+            return "failed" if committed else "reconnect"
 
     def send_verified(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
                       on_commit=None, on_release=None, on_pick=None, retries=ACK_RETRIES):
@@ -275,6 +355,12 @@ class RobotLink:
             if result == "failed":
                 print(f"[FAULT] Robot Comms — bo qua vat (id={cmd_id}).")
                 return False
+            if result == "reconnect":
+                print(f"[NET] Mat ket noi giua chung — ket noi lai (id={cmd_id})...")
+                if not self.reconnect():
+                    print("[NET] Khong ket noi lai duoc (dang dung).")
+                    return False
+                # reconnected; the robot loops GOTO START -> REQ, so retry the send.
             # result == "retry": loop and re-send on the next REQ
         print(f"[FAULT] Robot Comms — ACK that bai sau {retries} retries, "
               f"bo qua vat (id={cmd_id}).")

@@ -8,9 +8,7 @@ submodules; this file only orchestrates.
 """
 
 import os
-import time
 import queue
-import socket
 import argparse
 import threading
 
@@ -46,24 +44,16 @@ def main():
           f"hexagon=3->{PLACE_LABEL[3]}")
 
     cam_id = 0
-    sock   = None
 
+    # RobotLink owns the socket + (re)connection. A dropped/refused link is
+    # re-established (capped backoff) instead of freezing the robot on its next
+    # INPUT. stop_event lets a startup-time connect loop be interrupted.
+    stop_event = threading.Event()
+    link = RobotLink(ip=ROBOT_IP, port=ROBOT_PORT, stop_event=stop_event)
     print(f"\n[NET] Ket noi {ROBOT_IP}:{ROBOT_PORT}...")
-    while True:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2.0)
-            sock.connect((ROBOT_IP, ROBOT_PORT))
-            sock.settimeout(None)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # 50ms ACK budget
-            print(f"[NET] OK")
-            break
-        except OSError as e:
-            if sock:
-                sock.close()
-                sock = None
-            print(f"[NET] Thu lai... {e}")
-            time.sleep(2)
+    if not link.connect():
+        print("[NET] Khong the ket noi robot — thoat.")
+        return
 
     z_val = Z_PICK     # pick descent depth (config; was a hardcoded 28.0)
 
@@ -120,9 +110,7 @@ def main():
     frame_queue   = queue.Queue(maxsize=2)
     result_queue  = queue.Queue(maxsize=PICK_QUEUE_MAX)
     display_queue = queue.Queue(maxsize=2)
-    stop_event    = threading.Event()
 
-    link        = RobotLink(sock, stop_event)
     sender_lock = threading.Lock()
 
     sender_state = {
@@ -179,9 +167,8 @@ def main():
     for t in threads:
         t.join(timeout=2.0)
 
-    if sock:
-        sock.close()
-        print("[NET] Da dong ket noi.")
+    link.close()
+    print("[NET] Da dong ket noi.")
     print("[MAIN] Thoat.")
 
 

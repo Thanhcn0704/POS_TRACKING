@@ -194,6 +194,15 @@ ACK_TIMEOUT_S        = 0.05     # 50 ms deterministic ACK window
 ACK_RETRIES          = 2        # re-sends before safe-fault (skip the object)
 CHK_OFFSET           = 1000     # bias added before truncation so checksum terms stay positive
 
+# --- TCP reconnection (comms.robot_link) ------------------------------------
+# A dropped/refused link is re-established instead of freezing the robot on its
+# next INPUT (a fresh TCP connect resets the controller's IP1 channel). Per-
+# attempt connect timeout + capped exponential backoff; the backoff sleep wakes
+# immediately on stop_event so shutdown stays responsive.
+ROBOT_CONNECT_TIMEOUT_S = 2.0    # per-attempt TCP connect timeout (s)
+RECONNECT_BACKOFF_MIN_S = 0.5    # first delay after a drop (s)
+RECONNECT_BACKOFF_MAX_S = 5.0    # capped backoff ceiling (s)
+
 # --------------------------------------------------------------------------- #
 #  Detection / stability filter
 # --------------------------------------------------------------------------- #
