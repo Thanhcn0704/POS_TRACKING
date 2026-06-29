@@ -17,7 +17,7 @@ Wired in `main.py:main()`. All threads are `daemon=True`; shutdown via shared `s
             └──────────────┘                    └──────┬───────┘                  └──────┬───────┘
                                                        │ display_queue(2)                │ on_commit
                                                        ▼                                 ▼
-                                                ┌──────────────┐                  uart_comm.send_relay (Relay 1)
+                                                ┌──────────────┐                  uart_comm.send_relay -> Relay 2 / vacuum (PB9)
                                                 │   Display    │                         ▲
                                                 │thread_display│                         │ get_belt_speed()
                                                 └──────────────┘                  ┌──────┴───────┐
@@ -28,7 +28,7 @@ Wired in `main.py:main()`. All threads are `daemon=True`; shutdown via shared `s
 
 Shared state: `sender_state` dict under `sender_lock` (Detect-free; written by Sender, read by Display).
 Calibration refs (`correction_ref`, `hsv_params_ref`, `roi_mask_ref`) are 1-element lists; GIL makes the ref-swap atomic (read by Detect).
-Belt speed/ticks live in `uart_comm` under `_data_lock`, read via `get_belt_speed()` / `get_motor_data()`.
+Belt speed/ticks live in `uart_comm` under `_data_lock` (pulse rate de-jittered by a Kalman filter), read via `get_absolute_pulse_count()` / `get_pulse_frequency_hz()` / `get_belt_speed()` / the atomic `get_motor_snapshot()`.
 
 ---
 
@@ -39,11 +39,15 @@ Belt speed/ticks live in `uart_comm` under `_data_lock`, read via `get_belt_spee
 | Encoder pulses | conveyor | quadrature pulses on belt motion |
 | Pulse counting | **STM32F407** | hardware timer counts ticks; builds 11-byte telemetry frame `0xAA 0xBB <float speed><int32 ticks><cksum>` |
 | Serial RX | `uart_comm.thread_uart_receiver` | reads `/dev/ttyAMA0` @115200; `_process_rx_buffer` resyncs on header `0xAA 0xBB` (telemetry) or `0xCD 0xCE` (heartbeat ACK) |
-| Decode + filter | `uart_comm._decode_telemetry` | validates `telemetry_checksum`; **ignores the STM32 float speed** (`_speed_unused`); recomputes speed on the Pi from tick deltas: `inst = (Δticks·MM_PER_TICK)/Δt_wall`; EMA `α=0.25` → `current_belt_speed` (under `_data_lock`) |
+| Decode + filter | `uart_comm._decode_telemetry` | validates `telemetry_checksum`; **ignores the STM32 float speed**; tracks the absolute `total_ticks` and derives the pulse rate on the Pi from tick deltas, **de-jittered by a Kalman filter** (`KALMAN_Q/R`, supersedes the old `α=0.25` EMA) → `pulse_frequency_hz` / `belt_speed` (under `_data_lock`) |
 | Heartbeat | `send_ping` / `_on_ack` / `_check_heartbeat_timeout` | Pi pings `0xDD,seq` every 0.5s; STM32 echoes `0xCD 0xCE seq ck`; no-ACK-in-1.5s ⇒ status fault (**indicator only — does NOT gate the pipeline**) |
-| Consume | `get_belt_speed()` | Detect (snapshot into pick entry) and Sender (live `v_current`) read it |
+| Safe-state gate | `get_safe_state()` (read by Sender) | gates dispatch on **position-stream health**, not the heartbeat: telemetry stale > `TELEMETRY_TIMEOUT_S=0.5s`, encoder stall > 1.0s, or implausible tick jump → PAUSE + fail-safe vacuum, auto-resume on recovery |
+| Consume | `get_absolute_pulse_count()` / `get_pulse_frequency_hz()` | Detect latches the **pulse count** into the pick entry; Sender projects position from encoder displacement and reads the live rate (atomic `get_motor_snapshot()` also available) |
 
-**Key fact:** belt speed is derived from **encoder displacement** (good — no integration drift), but the Δt in the rate is **wall-clock** (`time.monotonic()`), and downstream position projection re-multiplies that speed by a separate wall-clock `elapsed`. (See critique R1.)
+**Key fact:** object position is projected from **encoder displacement** —
+`x_current = entry.x + (ticks_now − ticks_snap)·R_ENC` (`R_ENC` mm/pulse) — **not** wall-clock × speed,
+so scheduling jitter / GC pauses no longer leak into the pick point (the former R1/B2 drift is fixed).
+Belt velocity for the forward solve is the live pulse rate `get_pulse_frequency_hz()·R_ENC`.
 
 ---
 
@@ -53,7 +57,7 @@ Belt speed/ticks live in `uart_comm` under `_data_lock`, read via `get_belt_spee
 |-------|-------|--------------|
 | Frame grab | `hardware/camera.thread_capture` | pushes frames to `frame_queue` (maxsize 2; oldest dropped when full → newest-frame bias) |
 | Segmentation | `vision/detection.detect_objects` | HSV threshold (`hsv_params_ref`) ∧ ROI mask → **every** contour passing area/solidity/FOV/physical-size gates (`run_detection` = single largest, for calibration) |
-| Shape class | `vision/shape.py` | circle/square/triangle via circularity / aspect / vertex-count thresholds → `shape`,`shape_code` (1/2/3, default 0) |
+| Shape class | `vision/shape.py` | **strict** circle / square / **hexagon**, else `unknown` → REJECT. Discriminators (pure geometry): circle = min-enclosing-circle fill ≥ 0.88; square = 4 verts + aspect ~1 + rect_fill ~1.0; hexagon = **6 verts** + enclosing-circle fill ~0.83 (below a disc's 0.88, above pentagon's 0.76) → `shape`,`shape_code` (circle 1 / square 2 / hexagon 3, default 0) |
 | Coord extraction | `vision/geometry.py` | pixel centroid → **homography H** → **parallax** correction (`h_cam`,`h_obj`) → **offset** calib (`x_scale,x_bias,y_offset`) → `robot_x`,`robot_y` (mm) |
 | Tracking | `tracking.tracker.MultiObjectTracker` | greedy belt-projected association → per-object **track id**; per-track EMA, shape vote, stability + area-settle; confirms once for picking |
 | Enqueue | `detect_worker` | one `pick_entry = {x,y,shape,shape_code,captured_at,pulse_snap,belt_speed,cmd1_sent,track_id}` per confirmed track → `result_queue` (drops oldest if full) + most-urgent-track overlay → `display_queue` |
@@ -62,34 +66,52 @@ Belt speed/ticks live in `uart_comm` under `_data_lock`, read via `get_belt_spee
 
 ---
 
-## 1.3 Math & Sync Pipeline  —  Fusion → Interception ("Static Coordinate / Dynamic Temporal Trigger")
+## 1.3 Math & Sync Pipeline  —  Fusion → Direct Interception (Task 4)
 
-Design: the **meeting point is fixed** at `X_OPT = 0.0` (mid-envelope). The robot and the object are scheduled to arrive at `X_OPT` at the same instant; the robot only ever receives a **static** target. This sidesteps SCOL's missing native tracking.
+Design: there is **no single fixed meeting point** any more. Per object the Pi solves the **variable**
+intercept `X_int` where the robot and object naturally coincide (`processing/trajectory.py`):
 
-`sender_worker.thread_sender` per dequeued entry, then `trajectory.evaluate` (pure):
+>     X_int = x_current + v_belt · t_rob(robot_last → X_int)
+
+a fixed point solved by iteration — a contraction since `v_belt ≪ SCARA top speed`, so it converges in
+1–2 steps. At the converged in-envelope `X_int` the object- and robot-arrival times are equal **by
+construction** (`t_obj == t_rob`), i.e. feasible by definition; the arm catches each object wherever they
+meet, **including downstream of the old `X_OPT`** (which the static scheme dropped as "passed").
+`X_OPT = −155.25 mm` survives only as a documented nominal reference — the solver no longer pins to it.
+The robot still receives a **static** point (`X_int`) in the same CMD2 frame, so SCOL is unchanged.
+
+`sender_worker.thread_sender` drains the queue, projects each candidate from the **encoder**, drops
+stale/passed/duplicate, commits to the single most-urgent (furthest along the belt), then calls
+`trajectory.evaluate` (pure):
 
 ```
-elapsed     = now - entry.captured_at                       # wall-clock
-x_current   = entry.x + entry.belt_speed * elapsed          # projected belt position (snapshot speed)
-v_current   = uart_comm.get_belt_speed()                    # live belt speed
+c_now      = uart_comm.get_absolute_pulse_count()            # Phase A: absolute encoder pulses
+v_belt     = uart_comm.get_pulse_frequency_hz() * R_ENC      # Phase B: live belt velocity (mm/s)
+x_current  = entry.x + (c_now - entry.pulse_snap) * R_ENC    # ENCODER displacement — no wall-clock
 
-guards (sender):  elapsed > TRACK_TIMEOUT_S(8s) -> DISCARD
-                  x_current > X_OPT             -> DISCARD (already passed)
-                  v_current <= 0               -> re-queue (belt stopped)
+drain guards (sender):  now - captured_at > TRACK_TIMEOUT_S(30s) -> DISCARD (stale watchdog)
+                        x_current > INTERCEPT_X_MAX             -> DISCARD (past the reach envelope)
+                        _is_duplicate_pick(...)                 -> DROP    (re-detected fragment of last pick)
+                        v_belt <= 0                             -> re-queue all (belt stopped)
 
-t_obj  = (X_OPT - x_current) / v_current                    # time for object to reach X_OPT
-REJECT  if not (ROBOT_Y_MIN <= y <= ROBOT_Y_MAX)            # Y out of envelope
-t_rob  = predictor.predict(last_robot_xyz -> X_OPT,y,z)     # robot travel time
+evaluate(entry, x_current, v_belt, last_robot, predictor, z):  # pure, processing/trajectory.py
+  REJECT  if not (ROBOT_Y_MIN+tol <= y <= ROBOT_Y_MAX-tol)      # Y outside envelope
+  x_int, t_rob = solve_intercept(...)                          # fixed-point, 1-2 iters
+  t_obj  = (x_int - x_current) / v_belt                         # == t_rob at the converged point
+  PICK    if INTERCEPT_X_MIN <= x_int <= INTERCEPT_X_MAX        # meet THERE -> fire CMD2 @ variable X_int
+  WAIT    else                                                 # CMD1 pre-position @ ROBOT_X_MIN, re-queue
+  DISCARD if x_current already past INTERCEPT_X_MAX             # (normally pre-filtered in the drain)
 
-decision:
-  t_obj <= t_rob + LATENCY_OFFSET                       -> PICK   (fire CMD2 now; robot arrives ~LATENCY early, object catches up)
-  t_obj  > t_rob + LATENCY_OFFSET + WAIT_MARGIN_S(0.2)  -> WAIT   (CMD1 pre-position arm at ROBOT_X_MIN, re-queue)
-  else                                                  -> HOLD   (re-queue, sleep 20ms, re-evaluate)
+INTERCEPT_X_MIN = ROBOT_X_MIN + BOUNDARY_TOLERANCE_MM
+INTERCEPT_X_MAX = ROBOT_X_MAX - APPROACH_CLEARANCE_MM - BOUNDARY_TOLERANCE_MM
 ```
 
 `predictor.predict` (`processing/predictor.py`): if `robot_time_model.pkl` (sklearn) loads, regress on `[x1,y1,z1,x2,y2,z2]`; else **geometric trapezoidal** fallback (`v_max=800mm/s`, `a=1200mm/s²`, `+0.06s` overhead). Sanity-clamped to `0.05–30s`.
 
-**Key fact:** position uses the **snapshot** speed (`entry.belt_speed`) while time-to-arrival uses **live** speed (`v_current`) — a mix that drifts if belt speed changes between capture and decision (see critique R4).
+**Key fact:** the committed target's position comes from **encoder displacement** and its `t_obj` equals
+`t_rob` at the converged intercept, so the old position/time mismatch (former B3) is gone for that object.
+Remaining caveat: `c_now` and `v_belt` are read as two getters rather than one atomic `get_motor_snapshot()`,
+and `WAIT` pre-positioning still uses the live rate (fine — it only parks the arm).
 
 ---
 
@@ -101,8 +123,8 @@ decision:
 | Handshake | `RobotLink._transact` | `wait REQ` → send record → `_wait_ack` (50ms) → verify `frame_checksum` → `GATE_GO(1)` / `GATE_ABORT(0)` → `wait DONE/ARRIVED` |
 | SCOL parse | `robot_scara/PICKTEST.scol` | `INPUT IP1, ID,CMD,X,Y,Z,C,SHP` (blocking) → recompute `CKSUM` → `PRINT "ACK id cksum"` → `INPUT IP1, GATE` → `IF GATE==1 GOTO EXECUTE` |
 | Motion | PICKTEST | `CMD==1` WAIT_BOUNDARY → `MOVE PWAIT`, print `ARRIVED`. `CMD==2` DO_PICK → approach/descend(pick Z)/lift → shape branch place T1–T6 → print `DONE`. All `POINT(...,LEFTY)` |
-| Vacuum (Relay 1) | `sender_worker` + `uart_comm.send_relay` | **dead-reckoning**: `on_commit` (fired the instant GO is sent) starts `threading.Timer(max(0, t_rob - LATENCY_OFFSET), send_relay True)`; after the handshake completes → `timer.cancel()` + `send_relay(False)` |
-| Feeder (Relay 2) | **STM32 autonomous** | fires every 3.0s on STM32's own timer — no Pi involvement |
+| Vacuum (**Relay 2 / PB9**) | `sender_worker` + `uart_comm.send_relay` | **dead-reckoning**: `on_commit` (fired the instant GO is sent) starts `threading.Timer(max(0, t_rob − LATENCY_OFFSET), send_relay True)`; on handshake completion → `timer.cancel()` + `send_relay(False)`. Pi sends `0xCC r1` ×3 (idempotent); STM32 drives **PB9 active-low, open-drain** (see `HARDWARE_PINOUT.md`) |
+| Feeder (**Relay 1 / PB8**) | **STM32 autonomous** | fires every 3.0 s for 100 ms on STM32's own timer — no Pi involvement; PB8 active-low, open-drain |
 
 **Retry/fault:** `send_verified` retries up to `ACK_RETRIES=2` on **pre-commit** failures (timeout / bad ACK → abort gate + `buffreset`); once GO is sent the move is committed (a later failure is `failed`, never re-sent — robot is never double-commanded).
 
@@ -116,7 +138,7 @@ _Acting as Principal Automation Architect, under the SCOL constraints (blocking 
 **Conceptually yes; in current implementation, only at low belt speed and for one-at-a-time objects.**
 
 What is **sound**:
-- **"Static Coordinate / Dynamic Temporal Trigger" is the correct pattern** for a dumb, blocking controller: the Pi owns all timing and only ever ships a finalized static point. This is the right inversion of control given SCOL has no tracking/timeout/interrupts.
+- **Pi-owns-all-timing, ship-a-finalized-static-point is the correct pattern** for a dumb, blocking controller (the right inversion of control given SCOL has no tracking/timeout/interrupts). The meeting point evolved from a single static `X_OPT` to the **per-object direct intercept `X_int`** (Task 4), widening the catch window from one point to the whole reach envelope; the robot still only ever receives a finalized static coordinate.
 - The **trigger inequality is logically correct**: the move is fired when `t_obj` first falls to `t_rob + LATENCY_OFFSET`, so the robot arrives ~50 ms early and the object closes the gap. WAIT/HOLD/PICK form a proper monotone approach as `t_obj` shrinks.
 - **Speed is derived from encoder displacement**, not integrated wall-clock — structurally drift-resistant at the source.
 - The **handshake is freeze-aware**: every robot `INPUT` is matched by a Pi send on all *normal* paths; abort-gate-on-fault honours the no-timeout contract.
@@ -125,17 +147,22 @@ What is **not yet industrial-grade**: zero-drift is undermined by wall-clock pro
 
 ## 2.1 Critical bottlenecks, race conditions, latency risks
 
-**B1 — Sender is serial with robot motion (THROUGHPUT BOTTLENECK, root of the no-pick symptom).**
-`_transact` blocks on `wait_for_signal("DONE")` for the **entire** pick+place (seconds of SCARA travel). During that time no new object is evaluated; `result_queue` (max 4) backs up and Detect drops the oldest. Effective throughput = `1 / robot_cycle_time`. With belt transit ≈16 s **>** `TRACK_TIMEOUT_S=8 s`, queued objects expire before the arm is free → **only CMD1 ever fires**. This is the #1 blocker.
+> **Status note (updated):** this review predates **Task 4 (direct interception)** and the
+> **encoder-displacement projection** + **Kalman pulse-rate filter** + **safe-state gate** +
+> **duplicate-pick suppression** now in the code. Items those resolve are tagged **[RESOLVED]**;
+> the rest still stand and are unverified on the live line.
 
-**B2 — Zero-drift is broken by wall-clock × stale-speed projection.**
-`x_current = entry.x + entry.belt_speed * elapsed` uses **wall-clock `elapsed`** and the **capture-time** speed. The system *has* ground-truth displacement (`current_total_ticks`) but doesn't use it for projection. Any speed change, GC pause, or scheduling jitter between capture and decision injects position error directly into the pick point.
+**B1 — Sender is serial with robot motion (THROUGHPUT BOTTLENECK).** *Partially mitigated.*
+`send_to_robot` blocks on `wait_for_signal("DONE")` for the **entire** pick+place (seconds of SCARA travel). During that time no new object is evaluated; `result_queue` (max 8) backs up and Detect drops the oldest. Effective throughput = `1 / robot_cycle_time`. `TRACK_TIMEOUT_S` was raised 8 s → **30 s** so queued objects no longer expire before the arm frees up (the old "only CMD1 fires" symptom is gone), but the serial-with-motion limit itself remains — the structural fix (decouple "decide" from "execute") is still open.
 
-**B3 — Mixed speed sources in `evaluate` (RACE/LOGIC).**
-Position uses `entry.belt_speed` (snapshot) but `t_obj` uses `v_current` (live). If the belt accelerates/decelerates between capture and decision, the projected position and the projected arrival time disagree — the meeting instant is mis-estimated.
+**B2 — Wall-clock × stale-speed projection [RESOLVED].**
+Projection now uses ground-truth encoder displacement: `x_current = entry.x + (ticks_now − ticks_snap)·R_ENC` (sender_worker Phase A) via `get_absolute_pulse_count()`. Wall-clock `elapsed` and the capture-time speed no longer enter the pick point — implements former R1.
 
-**B4 — Inconsistent telemetry snapshot (RACE).**
-`get_belt_speed()` returns only speed; there is no atomic `(speed, ticks, t)` read. Detect latches `belt_speed`; Sender separately reads `v_current` and `time.monotonic()`. These three are sampled at different instants, so encoder-based projection (R1) cannot currently be done consistently.
+**B3 — Mixed speed sources in `evaluate` [RESOLVED for the committed target].**
+Position is now encoder displacement and the intercept is the fixed point where `t_obj == t_rob` by construction, so position and arrival time no longer disagree for the object being picked. (`WAIT` pre-positioning still uses the live rate — fine, it only parks the arm.)
+
+**B4 — Inconsistent telemetry snapshot (RACE, LOW — partially mitigated).**
+An atomic `get_motor_snapshot() -> (speed, ticks, t)` now exists, but the sender still reads `get_absolute_pulse_count()` and `get_pulse_frequency_hz()` as two separate calls. The window is small (both under `_data_lock`) and position is encoder-based; switching the sender to the single snapshot getter would close it fully.
 
 **B5 — Post-REQ send failure freezes the robot (ZERO-FREEZE HOLE).**
 In `_transact`, if `sock.sendall` in `_send_coord_frame` (or the gate send) raises after the robot already printed `REQ`, the handler returns `"failed"` **without delivering any bytes**. The robot is now blocked in `INPUT IP1, ID,...` **forever** (no SCOL timeout). The freeze contract is only honoured on the happy/abort paths, not on a mid-exchange socket error.
@@ -162,9 +189,9 @@ The old distance-only `is_new_object` + one-contour-per-frame is replaced by `vi
 
 > Each is a discrete, sign-off-gated task. SCOL guardrail stays in effect — these are **Pi-side** changes; no SCOL syntax invented.
 
-- **R1 — Encoder-displacement projection (ZERO-DRIFT).** Add `uart_comm.get_motor_snapshot() -> (speed, ticks, t)` returning an atomic triple under `_data_lock`. Latch `ticks_capture` into `pick_entry`. Project `x_current = entry.x + (ticks_now - ticks_capture) * MM_PER_TICK`. Removes wall-clock and stale-speed error in one move. (Fixes B2, B4; enables a clean fix for B3.) *Plan: P2 determinism.*
+- **R1 — Encoder-displacement projection (ZERO-DRIFT) [IMPLEMENTED].** `get_motor_snapshot()` exists and the sender projects `x_current = entry.x + (ticks_now − ticks_snap)·R_ENC`. Wall-clock / stale-speed error removed (B2). *Residual: switch the sender to the single atomic snapshot getter to also close B4.*
 
-- **R2 — Use one consistent speed in `evaluate` (LOGIC).** Drive both position and `t_obj` from the same source — ideally R1's displacement for position and `v_current` only for the forward `t_obj`. (Fixes B3.)
+- **R2 — One consistent speed in `evaluate` (LOGIC) [IMPLEMENTED via Task 4].** Position is encoder displacement and the direct-interception fixed point makes `t_obj == t_rob` at `X_int` (B3 resolved for the committed target).
 
 - **R3 — Decouple throughput / admission control (UNBLOCKS PICKS).** Right-size `TRACK_TIMEOUT_S` to the measured ≈16 s transit; estimate robot cycle time and **stop enqueuing** objects the arm provably cannot service before they pass `X_OPT` (so the queue reflects reality instead of expiring). Optionally split the Sender's "decide" from "execute" so decisions keep updating while a move is in flight. (Fixes B1.)
 
