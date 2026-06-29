@@ -437,19 +437,36 @@ static void MX_GPIO_Init(void)
     GPIOE->PUPDR   &= ~(GPIO_PUPDR_PUPD11 | GPIO_PUPDR_PUPD12);
     GPIOE->BSRR     =  GPIO_BSRR_BR_11 | GPIO_BSRR_BR_12;
 
-    /* Relay1 (PB8) */
+    /* Relay1 (PB8) — active-low, open-drain vao dien tro keo 5V cua board.
+     * Pre-set muc OFF (hi-Z) TRUOC khi bat output buffer: ODR reset = 0,
+     * neu bat output truoc thi open-drain se SINK xuong 0V = relay ON
+     * thoang qua luc khoi dong. Dat MODER=output SAU CUNG de tranh xung do. */
+    RELAY1_GPIO->BSRR     =  RELAY_OFF_LEVEL
+                              ? (1U <<  RELAY1_PIN)
+                              : (1U << (RELAY1_PIN + 16U));
+#if RELAY_OPEN_DRAIN
+    RELAY1_GPIO->OTYPER  |=  (1U   <<  RELAY1_PIN);          /* open-drain */
+#else
+    RELAY1_GPIO->OTYPER  &= ~(1U   <<  RELAY1_PIN);          /* push-pull  */
+#endif
+    RELAY1_GPIO->OSPEEDR &= ~(0x3U << (RELAY1_PIN * 2U));    /* low speed -> giam EMI/ringing */
+    RELAY1_GPIO->PUPDR   &= ~(0x3U << (RELAY1_PIN * 2U));    /* no internal pull; board keo 5V */
     RELAY1_GPIO->MODER   &= ~(0x3U << (RELAY1_PIN * 2U));
-    RELAY1_GPIO->MODER   |=  (0x1U << (RELAY1_PIN * 2U));
-    RELAY1_GPIO->OTYPER  &= ~(1U   <<  RELAY1_PIN);
-    RELAY1_GPIO->OSPEEDR |=  (0x2U << (RELAY1_PIN * 2U));
-    RELAY1_GPIO->PUPDR   &= ~(0x3U << (RELAY1_PIN * 2U));
+    RELAY1_GPIO->MODER   |=  (0x1U << (RELAY1_PIN * 2U));    /* output — dat SAU CUNG */
 
-    /* Relay2 (PB9) */
+    /* Relay2 (PB9) — active-low, open-drain (xem ghi chu Relay1) */
+    RELAY2_GPIO->BSRR     =  RELAY_OFF_LEVEL
+                              ? (1U <<  RELAY2_PIN)
+                              : (1U << (RELAY2_PIN + 16U));
+#if RELAY_OPEN_DRAIN
+    RELAY2_GPIO->OTYPER  |=  (1U   <<  RELAY2_PIN);          /* open-drain */
+#else
+    RELAY2_GPIO->OTYPER  &= ~(1U   <<  RELAY2_PIN);          /* push-pull  */
+#endif
+    RELAY2_GPIO->OSPEEDR &= ~(0x3U << (RELAY2_PIN * 2U));    /* low speed -> giam EMI/ringing */
+    RELAY2_GPIO->PUPDR   &= ~(0x3U << (RELAY2_PIN * 2U));    /* no internal pull; board keo 5V */
     RELAY2_GPIO->MODER   &= ~(0x3U << (RELAY2_PIN * 2U));
-    RELAY2_GPIO->MODER   |=  (0x1U << (RELAY2_PIN * 2U));
-    RELAY2_GPIO->OTYPER  &= ~(1U   <<  RELAY2_PIN);
-    RELAY2_GPIO->OSPEEDR |=  (0x2U << (RELAY2_PIN * 2U));
-    RELAY2_GPIO->PUPDR   &= ~(0x3U << (RELAY2_PIN * 2U));
+    RELAY2_GPIO->MODER   |=  (0x1U << (RELAY2_PIN * 2U));    /* output — dat SAU CUNG */
 
     /* Heartbeat LED — output push-pull, mac dinh TAT  (HB) */
     HEARTBEAT_LED_GPIO->MODER   &= ~(0x3U << (HEARTBEAT_LED_PIN * 2U));

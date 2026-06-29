@@ -113,13 +113,16 @@ draws near the port limit. `[TBD]` camera model/power.
 | **PA2** | USART2_TX (AF7) | OUT | UART_TX→Pi.RXD | Telemetry + ACK `[V]` |
 | **PA3** | USART2_RX (AF7) | IN | UART_RX←Pi.TXD | Relay cmd + ping `[V]` |
 | **PA6** | GPIO | OUT | HB_LED | Heartbeat LED (toggles on valid 0xCC/0xDD) `[V]` |
-| **PB8** | GPIO | OUT | RELAY1 | Feeder cylinder, **active HIGH**, autonomous 3 s / 100 ms ON `[V]` |
-| **PB9** | GPIO | OUT | RELAY2 | Vacuum suction, **active HIGH**, Pi-commanded via 0xCC r1 `[V]` |
+| **PB8** | GPIO (FT, 5 V-tol) | OUT (open-drain) | RELAY1 | Feeder cylinder, **active LOW**, autonomous 3 s / 100 ms ON `[V]` |
+| **PB9** | GPIO (FT, 5 V-tol) | OUT (open-drain) | RELAY2 | Vacuum suction, **active LOW**, Pi-commanded via 0xCC r1 `[V]` |
 | **PE11**| GPIO | OUT | MOTOR_IN1 | L298N IN1 `[V]` |
 | **PE12**| GPIO | OUT | MOTOR_IN2 | L298N IN2 `[V]` |
 
 Encoder: TIM2 Encoder Mode 3 (x4), `ENCODER_PPR = 32308` pulses/rev `[V]`. Relay polarity:
-`RELAY_ACTIVE_HIGH = 1` `[V]`. Motor: jumper 100% (no PWM), runs continuous one direction `[V]`.
+`RELAY_ACTIVE_HIGH = 0` → **active LOW, open-drain** (`RELAY_OPEN_DRAIN = 1`), low slew `[V]`.
+PB8/PB9 are **FT (5 V-tolerant)** I/O (DS8626 Table 10), so the open-drain OFF state may float to the
+board's 5 V pull-up without back-feeding the 3.3 V rail — **valid only if that pull-up is ≤ 5 V**.
+Motor: jumper 100% (no PWM), runs continuous one direction `[V]`.
 
 ---
 
@@ -145,14 +148,18 @@ directly. Each needs a driver stage with flyback protection `[TBD device choice]
 
 | Output | MCU pin | Drive stage `[TBD]` | Load | Behaviour `[V]` |
 |--------|---------|---------------------|------|-----------------|
-| K1 feeder valve | PB8 (active HIGH) | opto-isolated relay module **or** logic-level N-MOSFET/transistor + **flyback diode** across coil | feeder cylinder solenoid | autonomous: ON every 3 s for 100 ms |
-| K2 vacuum valve | PB9 (active HIGH) | same | vacuum generator/valve | Pi-commanded; idempotent 0xCC sent ×3 |
+| K1 feeder valve | PB8 (active LOW, open-drain) | opto-isolated relay module (IN pulled to **≤5 V** on board) **or** logic-level N-MOSFET/transistor + **flyback diode** across coil | feeder cylinder solenoid | autonomous: ON every 3 s for 100 ms |
+| K2 vacuum valve | PB9 (active LOW, open-drain) | same | vacuum generator/valve | Pi-commanded; idempotent 0xCC sent ×3 |
 | M1 conveyor motor | PE11, PE12 | **L298N** H-bridge `[V named in firmware]` (ENA jumpered 100 %) | DC gear motor | continuous, one direction |
 | LED1 heartbeat | PA6 | series resistor (~330 Ω–1 kΩ) | indicator LED | toggles on each valid Pi frame |
 
 Driver notes `[TBD/best-practice]`:
-- Relay modules: if 3.3 V GPIO drives a **5 V-logic** opto module, verify the trigger threshold;
-  use a 3.3 V-rated module or a logic-level MOSFET if it won't trigger at 3.3 V.
+- Relay modules: the firmware now drives PB8/PB9 **active-LOW, open-drain** (`RELAY_OPEN_DRAIN = 1`),
+  matching a standard opto-isolated module whose IN is pulled up on-board. The MCU only ever sinks
+  (ON) or releases to hi-Z (OFF); the board's pull-up supplies the high level. **The pull-up rail
+  must be ≤ 5 V** — PB8/PB9 are FT (5 V-tolerant), so 5 V is safe, but a 12 V/24 V IN line would
+  exceed the FT limit and damage the pin → use a transistor/MOSFET stage, do **not** wire directly.
+  No internal pull-up is enabled (it would only reach 3.3 V and fight the board's 5 V pull-up).
 - **Flyback diode** (e.g. 1N4007) across every relay/solenoid coil; snubber on contacts switching
   inductive AC.
 - L298N: IN1/IN2 are TTL (≈2.3 V high threshold) so 3.3 V drive is generally fine `[verify]`;

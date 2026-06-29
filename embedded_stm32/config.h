@@ -66,10 +66,32 @@
 #define UART_RX_BUF_SIZE    32U
 
 /* ============================================================
- * 6. LOGIC MUC RELAY — Active HIGH
- * ============================================================ */
+ * 6. LOGIC MUC RELAY — Active LOW (open-drain, board keo len 5V)
+ * ============================================================
+ *
+ *  Module relay opto-cach-ly pho bien la ACTIVE LOW: chan IN da duoc
+ *  keo len VCC=5V san tren board. MCU keo IN xuong 0V (SINK dong qua
+ *  LED opto) de KICH relay; tha noi (hi-Z) de NHA relay.
+ *
+ *    RELAY_ACTIVE_HIGH = 0  ->  ON_LEVEL=0 (keo xuong), OFF_LEVEL=1 (tha)
+ *
+ *  >>> CHE DO GPIO: OPEN-DRAIN <<<  (xem RELAY_OPEN_DRAIN ben duoi)
+ *  Push-pull se day chan len 3.3V doi dau voi dien tro keo 5V cua board
+ *  -> tranh chap dong / opto co the khong tat sach. Open-drain chi co 2
+ *  trang thai: SINK xuong 0V (ON) hoac tha hi-Z (OFF, board keo len 5V).
+ *
+ *  >>> AN TOAN 5V <<<  PB8 va PB9 cua STM32F407 la I/O loai "FT"
+ *  (5 V tolerant — DS8626/DM00037051 Table 10; cung la chan I2C1/CAN1
+ *  von chiu 5V). Chan FT KHONG co diode bao len VDD nen o trang thai
+ *  hi-Z co the noi len 5V ma KHONG bom dong vao rail 3.3V -> khong hong MCU.
+ *
+ *  >>> DIEU KIEN BAT BUOC <<<  Dien tro keo cua board PHAI ve <= 5V.
+ *  Neu chan IN idle o 12V/24V thi open-drain se VUOT gioi han FT (5V)
+ *  -> HONG CHAN. Truong hop do PHAI dung transistor/MOSFET hoac
+ *  level-shifter, KHONG noi truc tiep PB8/PB9.
+ */
 
-#define RELAY_ACTIVE_HIGH   1
+#define RELAY_ACTIVE_HIGH   0
 
 #if RELAY_ACTIVE_HIGH
   #define RELAY_ON_LEVEL    1U
@@ -78,6 +100,13 @@
   #define RELAY_ON_LEVEL    0U
   #define RELAY_OFF_LEVEL   1U
 #endif
+
+/*  Kieu ngo ra chan relay (PB8/PB9):
+ *    1 = OPEN-DRAIN  (bat buoc cho board active-low keo 5V; PB8/PB9 = FT)
+ *    0 = PUSH-PULL   (chi dung neu board thiet ke cho muc logic 3.3V)
+ *  Ngo ra cung dat OSPEEDR = LOW (trong main.c) de giam EMI/ringing tren
+ *  day dieu khien relay.  */
+#define RELAY_OPEN_DRAIN    1
 
 /* ============================================================
  * 7. SYSTEM CLOCK — HSI 16MHz, khong dung PLL
