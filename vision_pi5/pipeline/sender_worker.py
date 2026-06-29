@@ -116,8 +116,11 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 break
 
         now    = time.monotonic()
-        c_now  = uart_comm.get_absolute_pulse_count()           # Phase A: absolute pulses
-        v_belt = uart_comm.get_pulse_frequency_hz() * R_ENC     # Phase B: live belt velocity
+        # Phase A+B in ONE atomic read: pair the position (ticks) and velocity
+        # (freq) from the SAME telemetry frame under a single _data_lock, so the
+        # spatial projection and the t_obj solve can't straddle two frames (B4).
+        c_now, _freq = uart_comm.get_motor_snapshot()           # (ticks, freq_hz)
+        v_belt       = _freq * R_ENC                            # live belt velocity (mm/s)
 
         # Project every candidate; drop the stale (watchdog) and the already-passed.
         reachable = []

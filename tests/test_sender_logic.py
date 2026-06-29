@@ -89,6 +89,7 @@ def _install_fakes(t_rob, belt_speed, pulse_count=0):
         get_belt_speed=lambda: belt_box[0],
         get_absolute_pulse_count=lambda: pulse_box[0],
         get_pulse_frequency_hz=lambda: freq_box[0],
+        get_motor_snapshot=lambda: (pulse_box[0], freq_box[0]),   # atomic (ticks, freq)
         get_safe_state=lambda: (True, ""),
         send_relay=fake_send_relay,
     )
