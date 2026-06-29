@@ -3,7 +3,7 @@
 Drives pipeline.sender_worker.thread_sender with fakes for the predictor,
 uart_comm, and RobotLink (no camera, robot, or serial). Verifies:
 
-  * PERFECT WINDOW  -> CMD2 at the solved intercept X_int, vacuum by async timer
+  * PERFECT WINDOW  -> CMD2 at the solved intercept X_int, vacuum on AT_PICK event
   * TOO FAR         -> CMD1 to exactly ROBOT_X_MIN (never beyond)
   * PAST X_OPT      -> still intercepted downstream (Task 4), not discarded
   * PAST REACH      -> discarded (x_current > INTERCEPT_X_MAX)
@@ -58,11 +58,14 @@ class FakeLink:
             self._stop.set()
         return True
 
-    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None, on_release=None):
+    def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None,
+                      on_release=None, on_pick=None):
         if on_commit:
-            on_commit()                  # mimic the real GO-commit (starts vacuum timer)
+            on_commit()                  # GO-commit hook (no longer used for vacuum)
         if self._pick_block_s:
-            time.sleep(self._pick_block_s)
+            time.sleep(self._pick_block_s)   # mimic the blocking robot move
+        if on_pick:
+            on_pick()                    # mimic the robot's "AT_PICK" -> vacuum ON
         self.pick_calls.append((x, y, z, c, shape_code))
         if self._stop:
             self._stop.set()
@@ -132,7 +135,7 @@ def test_perfect_window_picks_at_intercept():
     # = (XO-240) + 2000*0.1 = XO-40, NOT the static X_OPT (Task 4).
     relay_log, _, _ = _install_fakes(t_rob=0.1, belt_speed=2000.0, pulse_count=0)
     stop = threading.Event()
-    link = FakeLink(stop_event=stop, pick_block_s=0.2)  # let the vacuum timer fire
+    link = FakeLink(stop_event=stop, pick_block_s=0.2)  # mimic the blocking robot move
     rq = queue.Queue(maxsize=config.PICK_QUEUE_MAX)
     rq.put(_entry(x=XO - 240.0, v=2000.0, pulse_snap=0))
     _run(link, rq, stop)

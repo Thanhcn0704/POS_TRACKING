@@ -123,7 +123,7 @@ and `WAIT` pre-positioning still uses the live rate (fine — it only parks the 
 | Handshake | `RobotLink._transact` | `wait REQ` → send record → `_wait_ack` (50ms) → verify `frame_checksum` → `GATE_GO(1)` / `GATE_ABORT(0)` → `wait DONE/ARRIVED` |
 | SCOL parse | `robot_scara/PICKTEST.scol` | `INPUT IP1, ID,CMD,X,Y,Z,C,SHP` (blocking) → recompute `CKSUM` → `PRINT "ACK id cksum"` → `INPUT IP1, GATE` → `IF GATE==1 GOTO EXECUTE` |
 | Motion | PICKTEST | `CMD==1` WAIT_BOUNDARY → `MOVE PWAIT`, print `ARRIVED`. `CMD==2` DO_PICK → approach/descend(pick Z)/lift → shape branch place T1–T6 → print `DONE`. All `POINT(...,LEFTY)` |
-| Vacuum (**Relay 2 / PB9**) | `sender_worker` + `uart_comm.send_relay` | **dead-reckoning**: `on_commit` (fired the instant GO is sent) starts `threading.Timer(max(0, t_rob − LATENCY_OFFSET), send_relay True)`; on handshake completion → `timer.cancel()` + `send_relay(False)`. Pi sends `0xCC r1` ×3 (idempotent); STM32 drives **PB9 active-low, open-drain** (see `HARDWARE_PINOUT.md`) |
+| Vacuum (**Relay 2 / PB9**) | `sender_worker` + `uart_comm.send_relay` | **event-driven (closed-loop)**: the SCOL program PRINTs `"AT_PICK"` at pick Z → `robot_link` fires `on_pick` → `send_relay(True)`; `"REL"` at discharge → `on_release` → `send_relay(False)` (+ a belt-and-suspenders OFF after DONE). No dead-reckoning timer. Pi sends `0xCC r1` ×3 (idempotent); STM32 drives **PB9 active-low, open-drain** (see `HARDWARE_PINOUT.md`) |
 | Feeder (**Relay 1 / PB8**) | **STM32 autonomous** | fires every 3.0 s for 100 ms on STM32's own timer — no Pi involvement; PB8 active-low, open-drain |
 
 **Retry/fault:** `send_verified` retries up to `ACK_RETRIES=2` on **pre-commit** failures (timeout / bad ACK → abort gate + `buffreset`); once GO is sent the move is committed (a later failure is `failed`, never re-sent — robot is never double-commanded).
@@ -176,8 +176,8 @@ On any `OSError`, the socket is never re-established. After a single drop, every
 **B8 — 50 ms ACK window is tight (LATENCY).**
 A transient controller TCP-send spike > 50 ms → spurious `ABORT` → retry; meanwhile the object may pass `X_OPT` and be discarded. Tolerable at 25 mm/s, lossy as speed rises. Must be bench-characterised.
 
-**B9 — Open-loop vacuum on a generic predictor.**
-With sklearn missing, `t_rob` is the **geometric** model of a *generic* trapezoidal profile, not this SCARA. Vacuum lead (`t_rob - LATENCY_OFFSET`) can be off by 100s of ms → early/late grip. The dead-reckoning relay has no position feedback to correct it.
+**B9 — Open-loop vacuum on a generic predictor [RESOLVED].**
+Vacuum is no longer timed off `t_rob`: the robot PRINTs `"AT_PICK"` at pick Z and `"REL"` at discharge, and `robot_link` energizes/drops the relay on those events (closed-loop, mirroring the existing REL handler). The predictor's `t_rob` still affects the *interception point*, but it no longer affects grip timing, so a wrong `t_rob` can mis-place the meeting point but not the grip instant.
 
 **B10 — Single-object tracker (RESOLVED — Task 8 / second-phase #2).**
 The old distance-only `is_new_object` + one-contour-per-frame is replaced by `vision/detection.detect_objects` (all survivors) + `tracking.tracker.MultiObjectTracker` (greedy belt-projected association → per-object id, enqueued once). Two objects in the ROI now keep distinct identities and `cmd1_sent` rides the correct track. *Not yet bench-validated on the live line.*

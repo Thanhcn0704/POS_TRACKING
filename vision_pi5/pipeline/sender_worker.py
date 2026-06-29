@@ -5,8 +5,8 @@ target (earliest-deadline = furthest along the belt); only that object drives th
 arm, so newer upstream objects never preempt the pre-position (no lane jitter).
 The interception decision lives in processing.trajectory.evaluate(), which solves
 the variable meeting point X_int; this loop executes the verdict: fire CMD2 at the
-variable X_int (with a dead-reckoning vacuum timer), pre-position via CMD1,
-hold/re-queue, or discard. sender_state is published under sender_lock.
+variable X_int (vacuum energized on the robot's AT_PICK event), pre-position via
+CMD1, hold/re-queue, or discard. sender_state is published under sender_lock.
 """
 
 import time
@@ -15,7 +15,7 @@ import threading
 
 from vision_pi5.config import (
     C_FIXED, TRACK_TIMEOUT_S, ROBOT_X_MIN, ROBOT_Y_MIN, ROBOT_Y_MAX,
-    Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL, LATENCY_OFFSET,
+    Z_SAFE, T2_X, T2_Y, T2_Z, LAST_STOP_BY_SHAPE_CODE, PLACE_LABEL,
     R_ENC, STARVED_ALARM_S, DEDUP_RADIUS_MM, DEDUP_WINDOW_S,
 )
 from vision_pi5.processing import trajectory as traj
@@ -185,22 +185,19 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
             name       = f"P{point_counter}"
             place_info = PLACE_LABEL.get(shape_code, "unknown")
 
-            # Dead-reckoning vacuum: energize as the arm reaches Z_PICK (~t_rob from
-            # now) minus valve/network lead time. Non-blocking background timer.
-            relay_delay   = max(0.0, t_rob - LATENCY_OFFSET)
-            suction_timer = threading.Timer(
-                relay_delay, uart_comm.send_relay, kwargs={"suction": True})
-            suction_timer.daemon = True
-
+            # Vacuum is event-driven (closed-loop): the SCOL program PRINTs "AT_PICK"
+            # the instant the arm reaches pick Z (WAIT MOTION>=100), and robot_link
+            # fires on_pick -> send_relay(True) THERE; "REL" at the discharge point
+            # fires on_release -> send_relay(False). No dead-reckoning threading.Timer.
             print(f"\n{'='*65}")
             print(f"[PICK #{point_counter}]  SHAPE={shape.upper()}  CODE={shape_code}")
             print(f"  Snapshot X     : {x_snapshot:.3f}  v_snap={v_snapshot:.1f}mm/s")
             print(f"  Delay elapsed  : {elapsed*1000:.0f}ms   X hien tai={x_current:.3f}")
             print(f"  Robot xuat phat: X={last_robot_x:.3f} Y={last_robot_y:.3f} Z={last_robot_z:.3f}")
             print(f"  t_obj -> X_int : {t_obj*1000:.0f}ms  (v_belt={v_belt:.1f}mm/s, encoder)")
-            print(f"  t_rob (ML)     : {t_rob*1000:.0f}ms  (+lat {LATENCY_OFFSET*1000:.0f}ms)")
+            print(f"  t_rob (ML)     : {t_rob*1000:.0f}ms")
             print(f"  PICK @ INTERCEPT: X={x_int:.3f}  Y={y_val:.3f}  Z=28.000  C={C_FIXED:.3f}")
-            print(f"  Vacuum lead    : energize in {relay_delay*1000:.0f}ms")
+            print(f"  Vacuum         : ON at AT_PICK (pick-depth event), OFF at REL")
             print(f"  Place          : {place_info}")
             print(f"{'='*65}")
 
@@ -216,14 +213,14 @@ def thread_sender(result_queue, sender_state, stop_event, z_val, link, sender_lo
                 sender_state["belt_speed"]      = v_belt
 
             cmd_seq += 1
-            # on_commit fires the moment the robot is GO'd to move -> accurate
-            # vacuum lead, and it never energizes on an aborted/failed transmit.
+            # Vacuum is event-driven: on_pick energizes when the robot reports
+            # "AT_PICK" (at pick Z), on_release drops it at "REL". Neither fires on an
+            # aborted/failed transmit (the robot never reaches those PRINTs).
             success = link.send_to_robot(
                 cmd_seq, x_int, y_val, z_val, C_FIXED, shape_code,
-                on_commit=suction_timer.start,
-                on_release=lambda: uart_comm.send_relay(suction=False))  # drop at discharge
+                on_pick=lambda: uart_comm.send_relay(suction=True),       # ON at pick Z
+                on_release=lambda: uart_comm.send_relay(suction=False))   # drop at discharge
 
-            suction_timer.cancel()                 # no-op if it already fired
             uart_comm.send_relay(suction=False)    # belt-and-suspenders: ensure OFF after DONE
 
             with sender_lock:

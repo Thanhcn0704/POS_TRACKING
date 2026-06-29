@@ -78,12 +78,16 @@ both accepted.
 ```
 `INPUT IP1, GATE` then `IF GATE == 1 THEN GOTO EXECUTE`; any other value re-loops to `START`.
 
-### 5. Robot → Pi : completion (after the motion)
+### 5. Robot → Pi : vacuum events + completion
 ```
+AT_PICK\r   cmd 2: arm reached pick Z   -> Pi energizes the vacuum (Relay 2 / PB9)
+REL\r       cmd 2: arm at the discharge -> Pi drops the vacuum
 ARRIVED\r   cmd 1 (boundary pre-position) finished
 DONE\r      cmd 2 (pick + place) finished
 ```
-`NG` or `OUT` anywhere is treated by the Pi as a robot-reported error.
+`AT_PICK` / `REL` are mid-motion signals that drive the vacuum **event-driven** (closed-loop) — the
+Pi reacts the instant each arrives, replacing the old dead-reckoning timer. `NG` or `OUT` anywhere is
+treated by the Pi as a robot-reported error.
 
 ---
 
@@ -144,16 +148,18 @@ Boundary: `5+1+0 + 793+750+1146+1000 = 3695` → **`ACK 5 3695`**
   `Z = 146.439`, the lift height), then `ARRIVED`. Pre-positions the arm at `ROBOT_X_MIN`
   while a far object travels into the pick window.
 * **cmd 2 — DO_PICK**: approach `POINT(X+10, Y, ZSAFE, C, 0.0, LEFTY)` → descend to the
-  **received** pick depth `POINT(X, Y, Z, C, 0.0, LEFTY)` → lift → place by shape
-  (1→T2/T1/T2, 2→T4/T3/T4, 3/0→T6/T5/T6) → `DONE`.
+  **received** pick depth `POINT(X, Y, Z, C, 0.0, LEFTY)` → **`PRINT "AT_PICK"`** (Pi → vacuum ON) →
+  lift → place by shape (1→T2/T1/T2, 2→T4/T3/T4, 3/0→T6/T5/T6) → **`PRINT "REL"`** (Pi → vacuum OFF)
+  → `DONE`.
   `ZSAFE = 146.439` is a program constant (travel height); only the **pick** Z comes from the
   verified record. `LEFTY` (config constant 1) is pinned as the 6th `POINT()` argument so the
   controller never flips arm solution between approach and pick. `MOVE` reads the config from
   the point, so no separate `CONFIG = LEFTY` statement is needed.
 
-The **vacuum** is not driven here (SCOL has no relay command in this cell); the Pi energizes
-Relay 1 by dead-reckoning timer (`vision_pi5/pipeline/sender_worker.py`), so the SCARA
-program is motion-only.
+The **vacuum** relay is not switched in SCOL (no relay command in this cell), but the program now
+**signals** its timing: it `PRINT`s `AT_PICK` at pick Z and `REL` at the discharge bottom, and the Pi
+energizes / drops **Relay 2 (PB9)** on those events (`vision_pi5/comms/robot_link.py` +
+`pipeline/sender_worker.py`) — closed-loop, replacing the earlier dead-reckoning timer.
 
 ---
 

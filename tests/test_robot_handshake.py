@@ -6,6 +6,7 @@ socketpair. Covers:
   * ACK timeout on the first attempt -> ABORT -> retry -> success
   * bad checksum on every attempt -> retries exhausted -> fault, robot NEVER GO'd
   * frame integrity: the mock receives exactly the coordinates the Pi sent
+  * event-driven vacuum: AT_PICK -> on_pick, REL -> on_release (ordered, pre-DONE)
 
 Run:
     py -V:ContinuumAnalytics/Anaconda39-64 tests/test_robot_handshake.py
@@ -27,7 +28,8 @@ class MockRobot(threading.Thread):
     """Reactive mock of the robot_scara SCOL loop (REQ/ACK/GO/DONE)."""
 
     def __init__(self, sock, *, delay_attempts=frozenset(), bad_attempts=frozenset(),
-                 delay_s=0.2, done_word="DONE", max_attempts=6, emit_rel=False):
+                 delay_s=0.2, done_word="DONE", max_attempts=6, emit_rel=False,
+                 emit_at_pick=False):
         super().__init__(daemon=True)
         self.sock           = sock
         self.delay_attempts = delay_attempts
@@ -35,7 +37,8 @@ class MockRobot(threading.Thread):
         self.delay_s        = delay_s
         self.done_word      = done_word
         self.max_attempts   = max_attempts
-        self.emit_rel       = emit_rel   # print "REL" before DONE (discharge release)
+        self.emit_at_pick   = emit_at_pick   # print "AT_PICK" at pick Z (vacuum ON)
+        self.emit_rel       = emit_rel       # print "REL" before DONE (discharge release)
         self._buf           = b""
         self.received       = []     # parsed (id,cmd,x,y,z,c,shp) per attempt
         self.got_go         = False
@@ -89,8 +92,11 @@ class MockRobot(threading.Thread):
                 self.got_go = True
                 self.moved  = True
                 try:
+                    if self.emit_at_pick:
+                        self.sock.sendall(b"AT_PICK\r")   # arm reached pick Z (vacuum ON)
+                        time.sleep(0.01)
                     if self.emit_rel:
-                        self.sock.sendall(b"REL\r")   # release at the discharge bottom
+                        self.sock.sendall(b"REL\r")       # release at the discharge bottom
                         time.sleep(0.01)
                     self.sock.sendall((self.done_word + "\r").encode())
                 except OSError:
@@ -178,6 +184,25 @@ def test_release_fires_on_rel_before_done():
         robot.join(timeout=2.0)
         assert ok is True
         assert released, "on_release must fire when the robot reports REL at the discharge"
+    finally:
+        server.close(); client.close()
+
+
+def test_pick_fires_on_at_pick_then_release_ordered():
+    # Event-driven vacuum: on_pick at "AT_PICK" (pick Z), on_release at "REL"
+    # (discharge), in that order, both before DONE.
+    server, client = _pair()
+    try:
+        robot = MockRobot(server, emit_at_pick=True, emit_rel=True); robot.start()
+        link = RobotLink(client)
+        events = []
+        ok = link.send_to_robot(1, config.X_OPT, -250.0, 28.0, config.C_FIXED, 1,
+                                on_pick=lambda: events.append("pick"),
+                                on_release=lambda: events.append("rel"))
+        robot.join(timeout=2.0)
+        assert ok is True
+        assert events == ["pick", "rel"], \
+            f"vacuum must energize at AT_PICK then drop at REL, got {events}"
     finally:
         server.close(); client.close()
 

@@ -152,6 +152,8 @@ class RobotLink:
     #    Pi  -> "id,cmd,x,y,z,c,shp\r"          (SCOL: INPUT IP1, ID,CMD,X,Y,Z,C,SHP)
     #    Rbt -> "ACK {id} {cksum}"              (within ACK_TIMEOUT_S)
     #    Pi  -> GATE_GO (1) ack valid  |  GATE_ABORT (0) timeout/mismatch
+    #    Rbt -> "AT_PICK" (at pick Z)   -> on_pick    (vacuum ON)   [cmd 2]
+    #    Rbt -> "REL"     (at discharge)-> on_release (vacuum OFF)  [cmd 2]
     #    Rbt -> "ARRIVED" (cmd 1) | "DONE" (cmd 2)   after the move
     # ----------------------------------------------------------------- #
     def _send_coord_frame(self, cmd_id, cmd, x, y, z, c, shape_code):
@@ -192,11 +194,15 @@ class RobotLink:
                 return "bad"
 
     def _transact(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
-                  on_commit, on_release=None):
+                  on_commit=None, on_release=None, on_pick=None):
         """One verified exchange. Returns 'done' | 'retry' | 'failed'.
 
         'retry' only for pre-commit failures (no GO sent yet); once GO is sent
         the robot is moving, so a later failure is 'failed' (never re-sent).
+
+        on_pick / on_release fire on the robot's mid-move "AT_PICK" / "REL"
+        PRINTs (vacuum ON at pick Z, OFF at discharge). They can only fire after
+        GO (the robot never reaches those PRINTs on an aborted/failed transmit).
         """
         try:
             if not self.wait_for_signal("REQ"):
@@ -223,9 +229,11 @@ class RobotLink:
                 on_commit()
             self.send_line(f"{GATE_GO}\r")
 
-            # Wait for completion. Drop the vacuum the INSTANT the robot reports
-            # "REL" (printed at the discharge bottom) so the part releases there,
-            # not after the place retract. CMD1 never prints REL -> no-op for it.
+            # Wait for completion. Energize the vacuum the INSTANT the robot reports
+            # "AT_PICK" (printed at pick Z, WAIT MOTION>=100) and drop it the instant
+            # it reports "REL" (printed at the discharge bottom) so the part is gripped
+            # at contact and released there — closed-loop, no dead-reckoning timer.
+            # CMD1 prints neither -> both are no-ops for it.
             deadline = time.monotonic() + 60.0
             while True:
                 line = self.read_line(deadline)
@@ -236,6 +244,10 @@ class RobotLink:
                 if not line:
                     continue
                 print(f"[RX] {repr(line)}")
+                if "AT_PICK" in line:
+                    if on_pick is not None:
+                        on_pick()               # vacuum ON the instant the arm reaches pick Z
+                    continue
                 if "REL" in line:
                     if on_release is not None:
                         on_release()            # vacuum OFF at the discharge point
@@ -252,12 +264,12 @@ class RobotLink:
             return "failed"
 
     def send_verified(self, cmd_id, cmd, x, y, z, c, shape_code, done_word,
-                      on_commit=None, on_release=None, retries=ACK_RETRIES):
+                      on_commit=None, on_release=None, on_pick=None, retries=ACK_RETRIES):
         for attempt in range(retries + 1):
             if attempt > 0:
                 print(f"[SENDER] Retry truyen ({attempt}/{retries}) id={cmd_id}")
             result = self._transact(cmd_id, cmd, x, y, z, c, shape_code,
-                                    done_word, on_commit, on_release)
+                                    done_word, on_commit, on_release, on_pick)
             if result == "done":
                 return True
             if result == "failed":
@@ -274,7 +286,7 @@ class RobotLink:
         return self.send_verified(cmd_id, 1, x, y, Z_SAFE, 0.0, 0, "ARRIVED")
 
     def send_to_robot(self, cmd_id, x, y, z, c, shape_code, on_commit=None,
-                      on_release=None):
+                      on_release=None, on_pick=None):
         place_info = PLACE_LABEL.get(shape_code, "unknown")
         print(f"[TX] CMD=2 (PICK) id={cmd_id} X={x:.3f} Y={y:.3f} Z={z:.3f} "
               f"C={c:.3f} SHP={shape_code}")
@@ -283,4 +295,5 @@ class RobotLink:
         print(f"[SEQ] LIFT     ({x+10:.3f}, {y:.3f}, {Z_SAFE:.3f})")
         print(f"[SEQ] PLACE -> {place_info}")
         return self.send_verified(cmd_id, 2, x, y, z, c, shape_code, "DONE",
-                                  on_commit=on_commit, on_release=on_release)
+                                  on_commit=on_commit, on_release=on_release,
+                                  on_pick=on_pick)
