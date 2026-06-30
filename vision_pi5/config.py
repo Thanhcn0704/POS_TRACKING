@@ -138,11 +138,14 @@ Y_OFFSET_DEFAULT     = 0.0
 # --------------------------------------------------------------------------- #
 # detect_objects() projects each contour to real mm via the homography (+ parallax)
 # and rejects anything outside these bands BEFORE shape classification. Sized for the
-# real targets with headroom for homography/measurement noise; the SQUARE is the
-# largest target and sets the upper bounds:
-#   square 50 mm side -> area 2500 mm^2, max min-area-rect side 50 mm
-#   (was 40 mm: 1600 mm^2 / 40 mm). AREA_MAX/DIM_MAX raised so the 50 mm part passes
-#   with the same ~1.25-1.6x margin the 40 mm part had; MINs unchanged (parts only grew).
+# real targets with headroom for homography/measurement noise. All three parts are now
+# 50 mm-class; the SQUARE is the largest and sets the upper bounds, so it alone gates them:
+#   square  50 mm side       -> area 2500 mm^2, max min-area-rect side 50 mm  (BINDING)
+#   circle  50 mm diameter   -> area ~1963 mm^2, dim 50 mm   (was 40 mm: ~1257 mm^2)
+#   hexagon 50 mm vertex-vtx -> area ~1624 mm^2, dim 50 mm   (circumradius 25 mm)
+#   (square was 40 mm: 1600 mm^2 / 40 mm.) AREA_MAX/DIM_MAX were raised for the 50 mm
+#   square with ~1.25-1.6x margin; the smaller 50 mm circle/hexagon pass with room to
+#   spare (verified vs the homography scale). MINs unchanged (every part only grew).
 PHYSICAL_AREA_MIN    = 500.0
 PHYSICAL_AREA_MAX    = 3200.0    # >= 2500 mm^2 (50 mm square) + ~28% margin
 PHYSICAL_DIM_MIN     = 25.0
