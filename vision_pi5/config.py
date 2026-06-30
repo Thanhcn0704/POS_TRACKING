@@ -306,9 +306,19 @@ SHAPE_VERTEX_TOLERANCE   = 0.04
 SHAPE_VERTEX_EPS_SWEEP    = (0.02, 0.03, 0.04)  # approxPolyDP eps fractions; take the modal count
 SHAPE_SOLIDITY_MIN_ACCEPT = 0.90    # all 3 targets are convex -> reject blobs/concave anomalies
 SHAPE_ASPECT_CIRCLE_MIN   = 0.80    # a circle's min-area-rect is near-square
-SHAPE_HEX_ENCLOSE_MIN     = 0.78    # hexagon enclosing-circle fill band ~0.83 (excludes
-SHAPE_HEX_ENCLOSE_MAX     = 0.86    #   pentagon 0.76 below + circle 0.88+ above -> reject gaps)
-SHAPE_ASPECT_HEX_MIN      = 0.78    # a regular hexagon's min-area-rect aspect ~0.87
+# Hexagon enclose_fill / aspect bands — WIDENED DOWN for MOTION BLUR. A moving hexagon
+# smears along the belt: the silhouette elongates, which drops a sharp hexagon's
+# enclose_fill ~0.83 / aspect ~0.87 toward ~0.74 / ~0.77 at ~18% elongation, so it was
+# being rejected as "unknown" while moving. The 6-corner count is elongation-INVARIANT,
+# so `vertices == 6` (kept strict in shape.py) — NOT enclose_fill — now carries the
+# pentagon/heptagon discrimination down here: at >=~10% elongation an elongated hexagon
+# (~0.74) sinks BELOW a pentagon (~0.76), so the band can no longer separate them, but
+# pentagon=5 / heptagon=7 vertices keep them out across the whole elongation range
+# (verified empirically up to 25% smear). MAX stays 0.86 (circle disc 0.88+ excluded; the
+# circle gate runs first anyway). Beyond ~18% smear the hexagon is too degraded -> rejected.
+SHAPE_HEX_ENCLOSE_MIN     = 0.72    # was 0.78; lowered for motion elongation (hex ~0.83 sharp)
+SHAPE_HEX_ENCLOSE_MAX     = 0.86    # keep: circle disc 0.88+ stays excluded
+SHAPE_ASPECT_HEX_MIN      = 0.70    # was 0.78; lowered for motion elongation (hex ~0.87 sharp)
 SHAPE_FILL_CIRCLE_MIN     = 0.68    # circle   fill band  ~0.785   (gap 0.62-0.68 -> reject)
 SHAPE_FILL_CIRCLE_MAX     = 0.86
 SHAPE_FILL_SQUARE_MIN     = 0.88    # square   fill band  ~1.0      (gap 0.86-0.88 -> reject)

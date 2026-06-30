@@ -61,6 +61,13 @@ def _concave_blob():
     return _contour([(20, 20), (120, 20), (60, 60), (120, 120), (20, 120)])
 
 
+def _elongated(contour, sy, cy=120.0):
+    """Squash a contour in Y to mimic motion-blur smear along the belt axis."""
+    out = contour.copy()
+    out[:, 0, 1] = cy + (out[:, 0, 1] - cy) * sy
+    return out
+
+
 def test_square_accepted():
     assert classify_shape(_square())[0] == "square"
 
@@ -89,6 +96,26 @@ def test_pentagon_rejected():
 def test_heptagon_rejected():
     # Adjacent polygon to the hexagon target -> must NOT leak through as hexagon.
     assert classify_shape(_heptagon())[0] == "unknown"
+
+
+def test_moving_hexagon_elongated_accepted():
+    # A hexagon smeared ~18% along travel (motion blur) drops enclose_fill ~0.74 and
+    # aspect ~0.77 -> used to be rejected as "unknown". The widened bands must accept it.
+    for sy in (0.90, 0.85, 0.82):
+        assert classify_shape(_elongated(_hexagon(), sy))[0] == "hexagon", f"sy={sy}"
+
+
+def test_moving_pentagon_not_leaked_as_hexagon():
+    # The widened hexagon bands rely on vertices==6 to exclude the pentagon; an elongated
+    # pentagon (still 5 corners) must NEVER be accepted as a hexagon.
+    for sy in (1.0, 0.90, 0.82, 0.75):
+        assert classify_shape(_elongated(_pentagon(), sy))[0] != "hexagon", f"sy={sy}"
+
+
+def test_moving_heptagon_not_leaked_as_hexagon():
+    # Likewise an elongated heptagon (7 corners) must not slip into the widened band.
+    for sy in (1.0, 0.90, 0.82, 0.75):
+        assert classify_shape(_elongated(_heptagon(), sy))[0] != "hexagon", f"sy={sy}"
 
 
 def test_concave_blob_rejected():

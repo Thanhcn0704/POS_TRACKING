@@ -79,9 +79,12 @@ def classify_shape(contour):
             and rect_fill >= SHAPE_FILL_SQUARE_MIN):
         return "square", circularity, vertices
 
-    # HEXAGON — exactly 6 corners (stable 120-deg), fills its enclosing circle ~0.83
-    # (below a disc's 0.88, above pentagon's 0.76 -> separates it from both), with a
-    # near-regular bounding box. enclose_fill was computed in the CIRCLE block above.
+    # HEXAGON — keyed on exactly 6 corners (stable 120-deg, and INVARIANT to the motion
+    # smear that elongates a MOVING part). The enclose_fill / aspect bands are widened DOWN
+    # in config so an elongated moving hexagon -- whose enclose_fill sinks toward ~0.74,
+    # BELOW a pentagon's ~0.76 -- is still recognised instead of dropped as "unknown".
+    # `vertices == 6` (kept strict) is what holds pentagon (5) and heptagon (7) out across
+    # that widened band. enclose_fill was computed in the CIRCLE block above.
     if (vertices == 6
             and SHAPE_HEX_ENCLOSE_MIN <= enclose_fill <= SHAPE_HEX_ENCLOSE_MAX
             and aspect >= SHAPE_ASPECT_HEX_MIN):
