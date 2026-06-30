@@ -85,7 +85,10 @@ SCARA_MOVE_OVERHEAD_S = 0.06       # s, fixed per-move overhead <-- verify
 ROBOT_IP             = "192.168.0.124"
 ROBOT_PORT           = 1001
 C_FIXED              = 89.167
-X_SEND_OFFSET        = 400.0
+# NOTE: the vision->robot X/Y mapping is the MEASURED offset calibration
+# (calibration/offset.py -> x_scale/x_bias/y_offset in models/offset_calib.npz), NOT a
+# hardcoded shift. A former static `X_SEND_OFFSET = 400.0` was dead code (never applied)
+# and removed — it masked that the real fix is running the offset calib on the rig.
 OBJECT_CLEAR_SECONDS = 0.5
 
 # --------------------------------------------------------------------------- #

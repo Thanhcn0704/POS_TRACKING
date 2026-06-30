@@ -12,11 +12,14 @@ import queue
 import argparse
 import threading
 
+import numpy as np
+
 from vision_pi5.config import (
     ROBOT_IP, ROBOT_PORT, HOMO_FILE, OFFSET_CALIB_FILE, PICK_QUEUE_MAX,
     CAM_W, CAM_H, Z_SAFE, Z_PICK, PLACE_LABEL, STABLE_TIME_S, EMA_ALPHA,
-    AREA_MIN, AREA_MAX, SOLIDITY_MIN,
+    AREA_MIN, AREA_MAX, SOLIDITY_MIN, ROBOT_X_MIN, ROBOT_X_MAX,
 )
+from vision_pi5.vision.geometry import pixel_to_robot
 from vision_pi5.comms.robot_link import RobotLink
 from vision_pi5.hardware import uart_comm
 from vision_pi5.hardware.camera import (
@@ -82,22 +85,47 @@ def main():
         print(f"\n[CALIB] !!! {e}")
         print("[CALIB] >>> SAFETY INTERLOCK: pipeline bi chan. "
               "Chay 'python3 -m tools.calibrate_homography' truoc.")
-        if sock:
-            sock.close()
+        link.close()
         return
 
     x_scale, x_bias, y_offset = load_offset()
-    if os.path.exists(OFFSET_CALIB_FILE):
+    have_offset = os.path.exists(OFFSET_CALIB_FILE)
+    if have_offset:
         print(f"\n[OFFSET] X_SCALE={x_scale:.6f} X_BIAS={x_bias:.4f} Y_OFF={y_offset:.4f}")
         do_calib = input("Calib offset lai? (y/n): ").strip().lower() == 'y'
     else:
-        print("\n[OFFSET] Chua co file calib.")
-        do_calib = input("Thuc hien calib offset? (y/n): ").strip().lower() == 'y'
+        # The homography maps pixels into a CALIBRATION frame, NOT robot coordinates;
+        # without the vision->robot offset fit every X/Y is shifted by the frame origin
+        # (hundreds of mm) and the arm misses EVERY object. Treat a missing offset like a
+        # missing homography: a safety interlock, never a silent identity fallback.
+        print("\n[OFFSET] !!! Chua co file calib offset (vision->robot).")
+        do_calib = input("Calib offset ngay bay gio? (>=2 diem) (y/n): ").strip().lower() == 'y'
 
     if do_calib:
         ns, nb, no = calibrate_offset(cam_id, H, h_cam, h_obj, roi_pts)
         if ns is not None:
             x_scale, x_bias, y_offset = ns, nb, no
+            have_offset = True
+
+    if not have_offset:
+        print("[OFFSET] >>> SAFETY INTERLOCK: chua calib offset vision->robot -> toa do "
+              "sai khung, robot se TRUOT moi vat. Pipeline bi chan.")
+        print(f"[OFFSET] >>> Calib offset (>=2 diem) hoac tao {OFFSET_CALIB_FILE} truoc.")
+        link.close()
+        return
+
+    # Coordinate-frame sanity: project the ROI centre into robot mm with the loaded
+    # offset. If it lands far outside the work envelope the offset is wrong/stale (the
+    # arm would miss every object) -> warn loudly. This is what surfaces, at startup,
+    # the silent "objects enqueued at X~-567, outside [-207,207]" failure.
+    _roi = np.asarray(roi_pts, dtype=float)
+    _cx, _cy = float(np.mean(_roi[:, 0])), float(np.mean(_roi[:, 1]))
+    _rx, _ = pixel_to_robot(_cx, _cy, H, h_cam, h_obj, x_scale, x_bias, y_offset)
+    _slack   = 0.5 * (ROBOT_X_MAX - ROBOT_X_MIN)  # half an envelope of tolerance
+    if not (ROBOT_X_MIN - _slack <= _rx <= ROBOT_X_MAX + _slack):
+        print(f"[OFFSET] !!! CANH BAO: tam ROI -> X={_rx:.1f}mm NGOAI khung "
+              f"[{ROBOT_X_MIN:.0f},{ROBOT_X_MAX:.0f}] -> offset co the SAI, robot se truot. "
+              "Kiem tra lai calib offset.")
 
     print(f"\n[CFG] X_SCALE={x_scale:.6f} X_BIAS={x_bias:.4f} Y_OFF={y_offset:.4f}")
     print(f"[CFG] STABLE={STABLE_TIME_S*1000:.0f}ms EMA={EMA_ALPHA} "
