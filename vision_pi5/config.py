@@ -136,10 +136,17 @@ Y_OFFSET_DEFAULT     = 0.0
 # --------------------------------------------------------------------------- #
 #  Physical-size gates (mm)
 # --------------------------------------------------------------------------- #
+# detect_objects() projects each contour to real mm via the homography (+ parallax)
+# and rejects anything outside these bands BEFORE shape classification. Sized for the
+# real targets with headroom for homography/measurement noise; the SQUARE is the
+# largest target and sets the upper bounds:
+#   square 50 mm side -> area 2500 mm^2, max min-area-rect side 50 mm
+#   (was 40 mm: 1600 mm^2 / 40 mm). AREA_MAX/DIM_MAX raised so the 50 mm part passes
+#   with the same ~1.25-1.6x margin the 40 mm part had; MINs unchanged (parts only grew).
 PHYSICAL_AREA_MIN    = 500.0
-PHYSICAL_AREA_MAX    = 2000.0
+PHYSICAL_AREA_MAX    = 3200.0    # >= 2500 mm^2 (50 mm square) + ~28% margin
 PHYSICAL_DIM_MIN     = 25.0
-PHYSICAL_DIM_MAX     = 65.0
+PHYSICAL_DIM_MAX     = 80.0      # >= 50 mm (50 mm square side) + margin
 
 # --------------------------------------------------------------------------- #
 #  Robot work envelope (mm)
@@ -209,8 +216,13 @@ RECONNECT_BACKOFF_MAX_S = 5.0    # capped backoff ceiling (s)
 SOLIDITY_MIN         = 0.72
 EMA_ALPHA            = 0.25
 STABLE_TIME_S        = 0.12
+# Coarse PIXEL-area pre-filter (noise rejection) applied before the physical-mm gates
+# above; also the ONLY size filter in tools/collect_shapes.py. At the measured ROI scale
+# (~4.4 px/mm from models/homography_test.npz) a 50 mm square silhouette is ~48k px^2, so
+# AREA_MAX was raised 40000 -> 65000 (= 40000*(50/40)^2 + margin) or the data collector and
+# detector would drop the bigger square here, before the physical gates ever run.
 AREA_MIN             = 500
-AREA_MAX             = 40000
+AREA_MAX             = 65000
 MORPH_KERNEL_SIZE    = 7
 # Vision-motion sync (Task 3): classify only when the object is FULLY in frame.
 FOV_EDGE_MARGIN_PX   = 20      # reject contours within this many px of the FOV edge
